@@ -68,7 +68,11 @@ WRITE_BATCH_SIZE = 10_000
 HDF5_SOA_CHUNK_SIZE = 256
 ASE_WRITE_MAX = 5_000
 DEFAULT_WRITE_CODEC = "none"
-DEFAULT_SCRATCH_DIR = "/ogre/tmp"
+DEFAULT_SCRATCH_ENV = "ATOMPACK_BENCHMARK_SCRATCH"
+DEFAULT_SCRATCH_DIR = str(
+    Path(os.environ.get(DEFAULT_SCRATCH_ENV, tempfile.gettempdir())).expanduser()
+    / "atompack-benchmarks"
+)
 DEFAULT_ATOMPACK_TARGET_BATCH_MIB = 16.0
 DEFAULT_BATCH_SWEEP_SIZES = [256, 512, 1024, 2048, 4096, WRITE_BATCH_SIZE]
 DEFAULT_WARMUP_TRIALS = 1
@@ -1252,7 +1256,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--scratch-dir", type=str, default=DEFAULT_SCRATCH_DIR,
-        help=f"Directory for temporary datasets (default: {DEFAULT_SCRATCH_DIR}).",
+        help=(
+            "Directory for temporary datasets "
+            f"(default: {DEFAULT_SCRATCH_DIR}; override via {DEFAULT_SCRATCH_ENV})."
+        ),
     )
     parser.add_argument(
         "--out", type=Path, default=None,
