@@ -36,7 +36,7 @@ if _RAYON_THREADS:
 
 import atompack
 
-from benchmark import _n_mols_for_atoms, _read_sample, bench, create_atompack_db
+from benchmark import DEFAULT_SCRATCH, _n_mols_for_atoms, _read_sample, bench, create_atompack_db
 
 DEFAULT_ATOMS = [64, 256, 512]
 DEFAULT_BATCH_SIZES = [32, 128, 512, 2048]
@@ -241,7 +241,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--trials", type=int, default=5)
     parser.add_argument("--batch-sizes", type=int, nargs="+", default=DEFAULT_BATCH_SIZES)
     parser.add_argument("--threads", nargs="+", default=DEFAULT_THREADS)
-    parser.add_argument("--scratch-dir", type=Path, default=Path("/ogre/atompack-v2/benchmarks"))
+    parser.add_argument("--scratch-dir", type=Path, default=DEFAULT_SCRATCH)
     parser.add_argument("--compression", type=str, default=DEFAULT_CODEC, choices=["none", "lz4", "zstd"])
     parser.add_argument("--level", type=int, default=DEFAULT_LEVEL)
     parser.add_argument("--seed", type=int, default=1234)

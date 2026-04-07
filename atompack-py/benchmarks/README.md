@@ -105,14 +105,15 @@ uv run --no-sync --project atompack-py python atompack-py/benchmarks/write_bench
 uv run --no-sync --project atompack-py python atompack-py/benchmarks/write_benchmark.py --codec zstd:3
 uv run --no-sync --project atompack-py python atompack-py/benchmarks/write_benchmark.py --bench 2 --sizes 50000 500000 5000000
 uv run --no-sync --project atompack-py python atompack-py/benchmarks/write_benchmark.py --bench 3 --batch-scale-atoms 64 256 --batch-scale-sizes 256 512 1024 2048 4096 10000
-uv run --no-sync --project atompack-py python atompack-py/benchmarks/write_benchmark.py --scratch-dir /ogre/atompack-v2/tmp
+uv run --no-sync --project atompack-py python atompack-py/benchmarks/write_benchmark.py --scratch-dir /tmp/atompack-bench
 uv run --no-sync --project atompack-py python atompack-py/benchmarks/write_benchmark.py --out atompack-py/benchmarks/write_results.json
 ```
 
 Notes:
 
-- Temporary benchmark datasets default to `/ogre/tmp`; override with
-  `--scratch-dir ...` when you want a different filesystem.
+- Benchmark datasets default to a temp-backed `atompack-benchmarks` directory;
+  override with `--scratch-dir ...` or `ATOMPACK_BENCHMARK_SCRATCH` when you
+  want a different filesystem.
 - This script defaults to `--codec none` so raw write throughput is measured unless you explicitly opt into compression.
 - Pass `--codec lz4` or `--codec zstd:3` when you want compressed-write numbers.
 - Atompack now auto-sizes its write batch by atom count unless you pass

@@ -216,12 +216,17 @@ def _ensure_scratch_has_space(path: Path, *, context: str, min_free_bytes: int =
         "Free space on that filesystem or use --scratch-dir on a different disk."
     )
 
-DEFAULT_SCRATCH = Path("/ogre/atompack-v2/benchmarks")
-DEFAULT_OMAT_ATOMPACK = Path(
-    "/ogre/atompack-v2/omat/train_50m_atompack_single_v3_soa/part_0000.atp"
-)
-DEFAULT_OMAT_LMDB_PACKED = Path("/ogre/atompack-v2/omat/train_50m_lmdb_single_v3")
-DEFAULT_OMAT_LMDB_PICKLE = Path("/ogre/atompack-v2/omat/train_50m_lmdb_pickle_style_v1")
+DEFAULT_SCRATCH_ENV = "ATOMPACK_BENCHMARK_SCRATCH"
+
+
+def _default_scratch_dir() -> Path:
+    override = os.environ.get(DEFAULT_SCRATCH_ENV)
+    if override:
+        return Path(override).expanduser()
+    return Path(tempfile.gettempdir()) / "atompack-benchmarks"
+
+
+DEFAULT_SCRATCH = _default_scratch_dir()
 
 # Default molecule counts per atom count — sized so datasets are large enough
 # to exceed page cache and stress real I/O.
