@@ -17,7 +17,7 @@ help:
 	@echo "  make fmt             Format Rust + Python"
 	@echo "  make fmt-check        Check formatting"
 	@echo "  make lint             Run linters"
-	@echo "  make test             Run tests (Rust + Python)"
+	@echo "  make test             Run default tests (Rust + Python core suite)"
 	@echo "  make ci               Run all CI checks"
 	@echo ""
 	@echo "Language-specific:"
@@ -27,7 +27,7 @@ help:
 	@echo "  make py-fmt           uv ruff format python (atompack-py)"
 	@echo "  make py-lint          uv ruff check python (atompack-py)"
 	@echo "  make py-test          uv pytest core suite (atompack-py/tests without benchmark tooling)"
-	@echo "  make py-test-benchmarks  uv pytest benchmark tooling suite (atompack-py/tests/benchmarks)"
+	@echo "  make py-test-benchmarks  uv pytest benchmark tooling suite (manual only)"
 	@echo "  make py-dev           uv maturin develop (atompack-py)"
 	@echo "  make py-dev-release   uv maturin develop -r (atompack-py)"
 	@echo ""
@@ -107,10 +107,10 @@ fmt-check: rust-fmt-check py-fmt-check
 
 lint: rust-lint py-lint
 
-test: rust-test py-test py-test-benchmarks
+test: rust-test py-test
 
 ci-rust: rust-fmt-check rust-lint rust-test
 
-ci-py: py-fmt-check py-lint py-test py-test-benchmarks
+ci-py: py-fmt-check py-lint py-test
 
 ci: ci-rust ci-py
