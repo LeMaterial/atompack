@@ -2,6 +2,9 @@
 
 Fast, compressed storage for atomic structures with properties.
 
+Atompack is part of the open-source [LeMaterial](https://lematerial.org) effort for
+large-scale materials and molecular ML datasets.
+
 ## Install
 
 ```bash

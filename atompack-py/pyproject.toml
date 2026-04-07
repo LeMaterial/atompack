@@ -27,12 +27,20 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
     "h5py>=3.10",
     "huggingface_hub>=0.24",
     "numpy>=1.20",
 ]
+
+[project.urls]
+Homepage = "https://lematerial.org"
+Repository = "https://github.com/LeMaterial/atompack"
+Issues = "https://github.com/LeMaterial/atompack/issues"
+Datasets = "https://huggingface.co/datasets/LeMaterial/Atompack"
 
 [project.optional-dependencies]
 dev = [
