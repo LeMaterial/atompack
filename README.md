@@ -20,10 +20,16 @@ files or shard directories.
 ## Installation
 
 ```bash
-uv pip install "git+https://github.com/Entalpic/atompack.git@main#subdirectory=atompack-py"
+pip install atompack
 ```
 
 Hugging Face support ships in the base package.
+
+### Install from source
+
+```bash
+uv pip install "git+https://github.com/Entalpic/atompack.git@main#subdirectory=atompack-py"
+```
 
 ## Quick Start
 
