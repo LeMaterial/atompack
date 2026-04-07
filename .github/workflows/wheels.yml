@@ -1,0 +1,82 @@
+name: Wheels
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-wheels:
+    name: Build wheels (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-15-intel
+          - macos-latest
+          - windows-latest
+        python-version:
+          - "3.8"
+          - "3.9"
+          - "3.10"
+          - "3.11"
+          - "3.12"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set target triple
+        shell: bash
+        run: |
+          case "${{ matrix.os }}" in
+            ubuntu-latest)
+              echo "TARGET=x86_64-unknown-linux-gnu" >> "$GITHUB_ENV"
+              ;;
+            macos-15-intel)
+              echo "TARGET=x86_64-apple-darwin" >> "$GITHUB_ENV"
+              ;;
+            macos-latest)
+              echo "TARGET=aarch64-apple-darwin" >> "$GITHUB_ENV"
+              ;;
+            windows-latest)
+              echo "TARGET=x86_64-pc-windows-msvc" >> "$GITHUB_ENV"
+              ;;
+            *)
+              echo "Unknown OS ${{ matrix.os }}"
+              exit 1
+              ;;
+          esac
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --release --out dist --interpreter python
+          working-directory: atompack-py
+          target: ${{ env.TARGET }}
+          manylinux: auto
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ env.TARGET }}-py${{ matrix.python-version }}
+          path: atompack-py/dist
+
+  build-sdist:
+    name: Build sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+          working-directory: atompack-py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: atompack-py/dist

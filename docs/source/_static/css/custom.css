@@ -1,0 +1,105 @@
+/* Copyright 2025 Entalpic */
+
+:root {
+    --custom-c-dimmed: rgb(162, 162, 162);
+    --entalpic-purpule-1: #5b32eb;
+    --entalpic-purpule-2: #7f61f0;
+    --entalpic-purpule-3: #c2b4f9;
+    --entalpic-purpule-4: #e1dafc;
+
+    --entalpic-pink-1: #c855af;
+    --entalpic-pink-2: #d47bc0;
+    --entalpic-pink-3: #eabfe0;
+    --entalpic-pink-4: #f4e0ef;
+
+    --entalpic-grey-1: #000000;
+    --entalpic-grey-2: #3a3a3a;
+    --entalpic-grey-3: #a3a3a3;
+    --entalpic-grey-4: #d2d2d2;
+
+    --sy-c-link: var(--entalpic-purpule-2);
+    --sy-c-link-hover: var(--entalpic-purpule-4);
+
+    --yue-c-code-background: var(--entalpic-grey-4);
+    --yue-c-code-text: var(--entalpic-grey-2);
+}
+/* Change dark background color */
+.dark {
+    --custom-c-background: rgb(30, 26, 32);
+    --custom-c-dimmed: rgb(127, 127, 127);
+
+    --sy-c-link: var(--entalpic-purpule-3);
+    --yue-c-link-1: var(--sy-c-link);
+    --sy-c-link-hover: var(--entalpic-purpule-4) !important;
+
+    --yue-c-code-background: var(--entalpic-grey-2) !important;
+    --yue-c-code-text: var(--entalpic-purpule-4) !important;
+
+    --sy-c-foot-background: var(--custom-c-background) !important;
+    --sy-c-background: var(--custom-c-background) !important;
+}
+#module-contents .py.class {
+    background: var(--yue-c-row-background);
+    padding: 24px 16px 8px 4px;
+    border-radius: 8px;
+}
+
+#module-contents .py.function,
+#module-contents .py.data,
+#module-contents .py.method {
+    border: 1px solid var(--custom-c-dimmed);
+    border-radius: 8px;
+    padding: 16px 8px;
+}
+.dark article,
+.dark .classifier,
+.dark .std {
+    color: var(--entalpic-grey-4) !important;
+}
+/* Change path to method color */
+.sig-prename {
+    color: var(--custom-c-dimmed) !important;
+}
+
+/* Change method name color */
+/* custom-param-list-item is added by custom.js */
+.sig-name,
+.custom-param-list-item {
+    color: var(--entalpic-purpule-1) !important;
+}
+.dark .sig-name,
+.dark .custom-param-list-item {
+    color: var(--entalpic-pink-2) !important;
+}
+
+.sig-param span.w {
+    display: inline-block;
+    width: 3px;
+}
+/* Change var hints */
+.n a .pre,
+.p .pre,
+.o .pre,
+.default_value .pre {
+    color: var(--custom-c-dimmed) !important;
+}
+
+.navigation-prev a,
+.navigation-next a {
+    transition: all ease 0.2s;
+    padding: 6px 12px;
+    border: 1px solid var(--custom-c-dimmed);
+    border-radius: 6px;
+}
+.navigation-prev a:hover,
+.navigation-next a:hover {
+    border: 1px solid var(--entalpic-purpule-2);
+    box-shadow: 0 0 6px var(--entalpic-purpule-2);
+    color: var(--custom-c-dimmed) !important;
+}
+.dark .navigation-prev a:hover,
+.dark .navigation-next a:hover {
+    border: 1px solid var(--yue-c-code-text);
+    box-shadow: 0 0 6px var(--yue-c-code-text);
+    color: var(--sy-c-link) !important;
+}

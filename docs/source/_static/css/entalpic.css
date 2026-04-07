@@ -1,0 +1,70 @@
+/* Copyright 2025 Entalpic */
+
+:root {
+    /* hsl(260, 13.00%, 9.00%) */
+}
+/* Change dark background color */
+.dark {
+    --background: 260, 18%, 13%;
+    --muted: 277.68deg 100% 19.99%;
+    --accent: 277.68deg 100% 19.99%;
+    --custom-light: rgb(230, 230, 230);
+}
+.dark,
+.dark body {
+    background: linear-gradient(
+        90deg,
+        hsl(253, 82%, 56%),
+        hsl(313, 41%, 56%)
+    ) !important;
+}
+.dark body .container:nth-child(1) {
+    background: linear-gradient(
+        90deg,
+        rgba(0, 0, 0, 0),
+        rgba(54, 52, 63, 0.1),
+        rgba(54, 52, 63, 0.2),
+        rgba(54, 52, 63, 0.25),
+        rgba(54, 52, 63, 0.3),
+        rgba(54, 52, 63, 0.3),
+        rgba(54, 52, 63, 0.3),
+        rgba(54, 52, 63, 0.3),
+        rgba(54, 52, 63, 0.25),
+        rgba(54, 52, 63, 0.2),
+        rgba(54, 52, 63, 0.1),
+        rgba(0, 0, 0, 0)
+    ) !important;
+}
+.dark #search-input::placeholder {
+    color: rgb(200, 200, 200);
+    opacity: 1; /* Firefox */
+}
+.dark a:hover {
+    color: rgb(235, 90, 240) !important;
+}
+.dark a {
+    color: var(--custom-light) !important;
+    transition: all 0.2s ease;
+}
+/* .dark a.reference.internal {
+    color: rgb(235, 90, 240) !important;
+} */
+/* Change path to method color */
+.sig-prename {
+    color: rgb(174, 174, 174) !important;
+}
+
+/* Change method name color */
+.dark .sig-name {
+    color: var(--custom-light) !important;
+}
+.sig-name {
+    color: rgb(108, 74, 181) !important;
+}
+
+/* Change var hints */
+.n a .pre,
+.p .pre,
+.viewcode-link {
+    color: rgb(188, 188, 188) !important;
+}

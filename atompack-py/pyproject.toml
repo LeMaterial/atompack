@@ -1,0 +1,75 @@
+[build-system]
+requires = ["maturin>=1.4,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "atompack-db"
+version = "0.2.0"
+description = "Fast, compressed storage for atomic structures with properties."
+authors = [
+    {name = "Ali Ramlaoui", email = "ali.ramlaoui@entalpic.ai"}
+]
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "Apache-2.0"}
+license-files = ["LICENSE"]
+keywords = ["molecular-dynamics", "machine-learning", "computational-chemistry", "materials-science"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Physics",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "h5py>=3.10",
+    "huggingface_hub>=0.24",
+    "numpy>=1.20",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-benchmark",
+    "mypy",
+    "ruff",
+]
+
+[tool.maturin]
+python-source = "python"
+module-name = "atompack._atompack_rs"
+features = ["pyo3/extension-module"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "N", "B"]
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+
+[dependency-groups]
+docs = [
+    "matplotlib",
+    "seaborn>=0.13",
+    "myst-parser",
+    "shibuya",
+    "sphinx-autoapi",
+    "sphinx-autodoc-typehints",
+    "sphinx-code-include",
+    "sphinx-copybutton",
+    "sphinx-design",
+    "sphinx-math-dollar",
+    "sphinxawesome-theme",
+]

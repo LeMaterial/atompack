@@ -1,0 +1,19 @@
+[package]
+name = "atompack-py"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "atompack_rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+atompack = { path = "../atompack" }
+pyo3.workspace = true
+numpy.workspace = true
+rayon.workspace = true
+bytemuck.workspace = true
+bincode.workspace = true
+
+[build-dependencies]
+pyo3-build-config = "0.26"

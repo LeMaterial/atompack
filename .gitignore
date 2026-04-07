@@ -1,0 +1,16 @@
+/target
+.cargo/
+.venv/
+.uv-cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.wheel
+*.egg
+docs/build/
+.pytest_cache/
+.benchmarks/
+.ruff_cache/
+*.so
+.rustc_tmp/
