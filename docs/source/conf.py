@@ -64,13 +64,8 @@ html_theme_options = {
         },
     ],
     # Shibuya supports a standard social icon in the header when these are set.
-    "github_url": "https://github.com/Entalpic/atompack",
+    "github_url": "https://github.com/LeMaterial/atompack",
 }
-
-# html_baseurl = (
-#     "file:///Users/victor/Documents/Github/entalpic/siesta/docs/build/html"
-# )
-
 
 # -----------------------------
 # -----  Plugins configs  -----
