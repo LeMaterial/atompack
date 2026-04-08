@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "atompack-db"
-version = "0.2.0"
+version = "0.2.1"
 description = "Fast, compressed storage for atomic structures with properties."
 authors = [
     {name = "Ali Ramlaoui", email = "ali.ramlaoui@entalpic.ai"},
