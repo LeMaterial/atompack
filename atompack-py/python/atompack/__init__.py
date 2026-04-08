@@ -43,7 +43,7 @@ from ._atompack_rs import PyAtomDatabase as Database
 from ._atompack_rs import PyMolecule as Molecule
 from .ase_bridge import add_ase_batch, from_ase, to_ase, to_ase_batch
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 __all__ = [
     "Atom",
     "Molecule",
