@@ -6,15 +6,6 @@ Hugging Face
 Atompack can reopen datasets directly from remote Hugging Face repositories and can also publish
 local datasets through a small API in ``atompack.hub``.
 
-Installation
-------------
-
-Hub support ships with the base package:
-
-.. code-block:: bash
-
-   uv pip install "git+https://github.com/Entalpic/atompack.git@main#subdirectory=atompack-py"
-
 Open Remote Datasets
 --------------------
 

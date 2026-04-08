@@ -1,4 +1,4 @@
-# atompack
+# Atompack
 
 Fast, compressed storage for atomic structures with properties.
 
@@ -54,7 +54,8 @@ Remote datasets such as `omat/train` and `omol/train` can be opened directly fro
 
 ## More
 
-Full documentation and benchmark notes live in the repository root `README.md`.
+Full documentation and benchmark notes live at
+`https://entalpic-atompack.readthedocs-hosted.com/en/latest/`.
 
 If you are working on the Rust crate directly, the maintained Rust entrypoints are:
 

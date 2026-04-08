@@ -7,7 +7,7 @@ This page contains leads to the documentation of the ``atompack`` package.
 
 The API reference was auto-generated with ``autoapi`` [#f1]_.
 
-You can see the source code on `Github <https://github.com/Entalpic/atompack>`_ and explore the rendered documentation here ⬇️
+You can see the source code on `Github <https://github.com/LeMaterial/atompack>`_ and explore the rendered documentation at `https://entalpic-atompack.readthedocs-hosted.com/en/latest/ <https://entalpic-atompack.readthedocs-hosted.com/en/latest/>`_.
 
 .. toctree::
    :titlesonly:

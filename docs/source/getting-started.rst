@@ -16,11 +16,17 @@ PBC, and arbitrary custom properties for additional properties. The main workflo
 Installation
 ------------
 
-Install the Python package from the repository:
+Install the Python package from Pypi: 
 
 .. code-block:: bash
 
-   uv pip install "git+https://github.com/Entalpic/atompack.git@main#subdirectory=atompack-py"
+   pip install atompack-db
+
+or from the source repository:
+
+.. code-block:: bash
+
+   uv pip install "git+https://github.com/LeMaterial/atompack.git@main#subdirectory=atompack-py"
 
 Quickstart
 ----------

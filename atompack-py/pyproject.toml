@@ -7,7 +7,8 @@ name = "atompack-db"
 version = "0.2.0"
 description = "Fast, compressed storage for atomic structures with properties."
 authors = [
-    {name = "Ali Ramlaoui", email = "ali.ramlaoui@entalpic.ai"}
+    {name = "Ali Ramlaoui", email = "ali.ramlaoui@entalpic.ai"},
+    {name = "Victor Schmidt", email = "victor.schmidt@entalpic.ai"}
 ]
 readme = "README.md"
 requires-python = ">=3.8"
@@ -38,6 +39,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://lematerial.org"
+Documentation = "https://entalpic-atompack.readthedocs-hosted.com/en/latest/"
 Repository = "https://github.com/LeMaterial/atompack"
 Issues = "https://github.com/LeMaterial/atompack/issues"
 Datasets = "https://huggingface.co/datasets/LeMaterial/Atompack"

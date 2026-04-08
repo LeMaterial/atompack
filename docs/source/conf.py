@@ -64,7 +64,7 @@ html_theme_options = {
         },
     ],
     # Shibuya supports a standard social icon in the header when these are set.
-    "github_url": "https://github.com/Entalpic/atompack",
+    "github_url": "https://github.com/LeMaterial/atompack",
 }
 
 # html_baseurl = (
@@ -154,7 +154,9 @@ hoverxref_mathjax = True
 
 # Open Graph
 
-# ogp_site_url = "https://entalpic-dev-guide.readthedocs.io/en/latest/"
+html_baseurl = "https://entalpic-atompack.readthedocs-hosted.com/en/latest/"
+
+# ogp_site_url = "https://entalpic-atompack.readthedocs-hosted.com/en/latest/"
 # ogp_social_cards = {
 #     "enable": True,
 #     # "image": "./_static/images/logo.png",
