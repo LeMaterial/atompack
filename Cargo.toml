@@ -7,7 +7,7 @@ version = "0.2.0"
 edition = "2024"
 authors = ["Ali Ramlaoui <ali.ramlaoui@entalpic.ai>"]
 license = "Apache-2.0"
-repository = "https://github.com/Entalpic/atompack"
+repository = "https://github.com/LeMaterial/atompack"
 
 [workspace.dependencies]
 ndarray = "0.15"

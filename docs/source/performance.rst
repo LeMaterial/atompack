@@ -51,7 +51,7 @@ For a representative NVMe slice at 64 atoms per molecule, the comparison below u
 - sequential read throughput
 - the single-worker ``multiprocessing`` slice as the random or shuffled read proxy
 
-.. figure:: ../../atompack_story_report/story_read_hero.svg
+.. figure:: _static/img/atompack-story/story_read_hero.svg
    :alt: Atompack read throughput benchmark hero figure
 
 For that slice, Atompack reaches about:
@@ -101,10 +101,10 @@ Scaling And Filesystems
 
 The benchmark results also cover atom-count scaling and behavior on shared filesystems:
 
-.. figure:: ../../atompack_story_report/story_size_scaling.svg
+.. figure:: _static/img/atompack-story/story_size_scaling.svg
    :alt: Atompack scaling figure across atom counts
 
-.. figure:: ../../atompack_story_report/story_random_filesystems.svg
+.. figure:: _static/img/atompack-story/story_random_filesystems.svg
    :alt: Atompack random read behavior across filesystems
 
 
@@ -123,7 +123,7 @@ Write Throughput
 
 For write throughput, the comparison below uses the current NVMe write benchmark slices:
 
-.. figure:: ../../atompack_story_report/story_write_overview.svg
+.. figure:: _static/img/atompack-story/story_write_overview.svg
    :alt: Atompack write throughput overview
 
 For the 64-atom slice, Atompack leads the plotted backends both with builtin fields only and with
@@ -165,7 +165,7 @@ Storage Efficiency
 For storage footprint, the comparison below reports normalized artifact size for the same write
 benchmark slices:
 
-.. figure:: ../../atompack_story_report/story_write_storage.svg
+.. figure:: _static/img/atompack-story/story_write_storage.svg
    :alt: Atompack write storage efficiency comparison
 
 For the 64-atom slice:

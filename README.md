@@ -12,7 +12,7 @@ files or shard directories.
 </p>
 
 <p align="center">
-  <a href="https://YOUR-READTHEDOCS-URL">Documentation</a>
+  <a href="https://entalpic-atompack.readthedocs-hosted.com/en/latest/">Documentation</a>
   ·
   <a href="https://huggingface.co/datasets/LeMaterial/Atompack">Hugging Face datasets</a>
 </p>
@@ -28,7 +28,7 @@ Hugging Face support ships in the base package.
 ### Install from source
 
 ```bash
-uv pip install "git+https://github.com/Entalpic/atompack.git@main#subdirectory=atompack-py"
+uv pip install "git+https://github.com/LeMaterial/atompack.git@main#subdirectory=atompack-py"
 ```
 
 ## Quick Start
@@ -102,16 +102,17 @@ strong batch-write throughput, and storage efficiency that stays close to compac
 formats.
 
 For the benchmark narrative and current figures, see the
-[release blog post](docs/source/blog/atompack-release.md) and
-[performance docs](docs/source/performance.rst).
+[release blog post](https://entalpic-atompack.readthedocs-hosted.com/en/latest/blog/atompack-release.html)
+and
+[performance docs](https://entalpic-atompack.readthedocs-hosted.com/en/latest/performance.html).
 
 ## Documentation
 
-- [Getting started](docs/source/getting-started.rst)
-- [Architecture](docs/source/architecture.rst)
-- [Hugging Face integration](docs/source/huggingface.rst)
-- [Performance notes](docs/source/performance.rst)
-- [Contributing](docs/source/contributing.rst)
+- [Getting started](https://entalpic-atompack.readthedocs-hosted.com/en/latest/getting-started.html)
+- [Architecture](https://entalpic-atompack.readthedocs-hosted.com/en/latest/architecture.html)
+- [Hugging Face integration](https://entalpic-atompack.readthedocs-hosted.com/en/latest/huggingface.html)
+- [Performance notes](https://entalpic-atompack.readthedocs-hosted.com/en/latest/performance.html)
+- [Contributing](https://entalpic-atompack.readthedocs-hosted.com/en/latest/contributing.html)
 
 ## Development
 

@@ -149,7 +149,9 @@ hoverxref_mathjax = True
 
 # Open Graph
 
-# ogp_site_url = "https://entalpic-dev-guide.readthedocs.io/en/latest/"
+html_baseurl = "https://entalpic-atompack.readthedocs-hosted.com/en/latest/"
+
+# ogp_site_url = "https://entalpic-atompack.readthedocs-hosted.com/en/latest/"
 # ogp_social_cards = {
 #     "enable": True,
 #     # "image": "./_static/images/logo.png",
