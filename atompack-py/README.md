@@ -23,11 +23,11 @@ import numpy as np
 
 positions = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32)
 atomic_numbers = np.array([6, 8], dtype=np.uint8)
-mol = atompack.Molecule(positions, atomic_numbers)
+mol = atompack.Molecule.from_arrays(positions, atomic_numbers)
 mol.energy = -123.456
 mol.forces = np.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]], dtype=np.float32)
 
-db = atompack.Database("data.atp")
+db = atompack.Database("data.atp", overwrite=True)
 db.add_molecule(mol)
 db.flush()
 ```
