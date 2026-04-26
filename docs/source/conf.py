@@ -11,7 +11,7 @@ project = "atompack"  # Project name
 copyright = "2026, Entalpic"
 author = "Ali Ramlaoui and contributors"  # Contributors to the package
 release = (
-    "0.2.0"  # Current version of the package, can be retrieved programmatically too.
+    "0.2.1"  # Current version of the package, can be retrieved programmatically too.
 )
 
 # -- General configuration ---------------------------------------------------
