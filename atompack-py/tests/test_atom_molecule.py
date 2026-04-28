@@ -225,10 +225,10 @@ def test_molecule_custom_properties() -> None:
         "vec3_f64",
     }
 
-    with pytest.raises(ValueError, match=r"not found"):
+    with pytest.raises(KeyError, match=r"not found"):
         mol.get_property("stress")
 
-    with pytest.raises(ValueError, match=r"not found"):
+    with pytest.raises(KeyError, match=r"not found"):
         mol.get_property("does_not_exist")
 
 
