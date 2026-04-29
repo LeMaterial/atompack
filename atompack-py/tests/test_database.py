@@ -577,3 +577,51 @@ def test_get_molecules_flat_empty(tmp_path: Path) -> None:
     assert batch["n_atoms"].shape == (0,)
     assert batch["positions"].shape == (0, 3)
     assert batch["atomic_numbers"].shape == (0,)
+
+
+def test_database_open_mmap_populate(tmp_path: Path) -> None:
+    # populate=True prefaults mapped pages on Linux. On other platforms it's a
+    # no-op. Either way the open path must succeed and return readable data.
+    path = tmp_path / "populate.atp"
+    db = atompack.Database(str(path))
+    db.add_molecule(_make_molecule(-3.0))
+    db.flush()
+
+    db_r = atompack.Database.open(str(path), mmap=True, populate=True)
+    assert len(db_r) == 1
+    assert db_r[0].energy == pytest.approx(-3.0)
+
+
+def test_database_negative_indexing_raises_index_error(tmp_path: Path) -> None:
+    # Database does not support negative indexing today; a clear IndexError
+    # is preferable to silent wraparound.
+    path = tmp_path / "negidx.atp"
+    db = atompack.Database(str(path))
+    db.add_molecule(_make_molecule(-1.0))
+    db.flush()
+
+    db_r = atompack.Database.open(str(path))
+    with pytest.raises((IndexError, OverflowError, ValueError)):
+        _ = db_r[-1]
+
+
+def test_database_empty_molecule_roundtrip(tmp_path: Path) -> None:
+    # n_atoms == 0 is the SOA parser edge case; positions/atomic_numbers slices
+    # become zero-length and most code paths must still work.
+    path = tmp_path / "empty_mol.atp"
+    mol = atompack.Molecule.from_arrays(
+        np.zeros((0, 3), dtype=np.float32),
+        np.zeros((0,), dtype=np.uint8),
+        energy=0.0,
+    )
+
+    db = atompack.Database(str(path))
+    db.add_molecule(mol)
+    db.flush()
+
+    db_r = atompack.Database.open(str(path))
+    read = db_r[0]
+    assert len(read) == 0
+    assert read.positions.shape == (0, 3)
+    assert read.atomic_numbers.shape == (0,)
+    assert read.energy == pytest.approx(0.0)
