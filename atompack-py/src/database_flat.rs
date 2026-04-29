@@ -187,6 +187,14 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
                             i, sec.key
                         )));
                     }
+                    if sec.type_tag != schema_entry.type_tag {
+                        // Same key + kind but different type tag would silently
+                        // reinterpret the bytes downstream as a different dtype.
+                        return Err(invalid_data(format!(
+                            "Section '{}' type tag mismatch at molecule {}: schema is {}, got {}",
+                            sec.key, i, schema_entry.type_tag, sec.type_tag
+                        )));
+                    }
                     if schema_entry.per_atom {
                         let expected = n.checked_mul(schema_entry.elem_bytes).ok_or_else(|| {
                             invalid_data(format!("Section '{}' payload length overflow", sec.key))
@@ -199,6 +207,19 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
                                 expected
                             )));
                         }
+                    } else if schema_entry.slot_bytes != 0
+                        && sec.payload.len() != schema_entry.slot_bytes
+                    {
+                        // Per-molecule slot: schema is set from molecule 0; if a later
+                        // molecule's payload disagrees, the memcpy below would OOB-write
+                        // into an adjacent slot from a parallel rayon thread.
+                        return Err(invalid_data(format!(
+                            "Per-molecule section '{}' has invalid payload length {} for molecule {} (schema slot is {})",
+                            sec.key,
+                            sec.payload.len(),
+                            i,
+                            schema_entry.slot_bytes
+                        )));
                     }
 
                     if schema_entry.slot_bytes == 0 {
