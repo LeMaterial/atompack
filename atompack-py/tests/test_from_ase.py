@@ -502,3 +502,29 @@ def test_to_ase_batch_none_calc_mode_preserves_results(tmp_path) -> None:
     np.testing.assert_allclose(atoms_batch[1].info["stress"], stress[1])
     np.testing.assert_allclose(atoms_batch[1].arrays["forces"], forces[1])
     np.testing.assert_allclose(atoms_batch[1].arrays["charges"], charges[1])
+
+
+def test_from_ase_expands_voigt6_stress_to_3x3() -> None:
+    # ASE's get_stress(voigt=True) returns a (6,) Voigt-form array; the bridge
+    # must expand it to a (3,3) symmetric tensor before storing.
+    voigt = np.array([1.1, 2.2, 3.3, 4.4, 5.5, 6.6], dtype=np.float64)
+    atoms = FakeASEAtoms(
+        positions=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float64),
+        atomic_numbers=np.array([6, 8], dtype=np.int64),
+        info={"ase_stress": voigt},
+    )
+
+    mol = atompack.from_ase(atoms)
+    assert mol.stress is not None
+    assert mol.stress.shape == (3, 3)
+    # Voigt order is (xx, yy, zz, yz, xz, xy); expanded matrix is symmetric.
+    expected = np.array(
+        [
+            [voigt[0], voigt[5], voigt[4]],
+            [voigt[5], voigt[1], voigt[3]],
+            [voigt[4], voigt[3], voigt[2]],
+        ],
+        dtype=np.float64,
+    )
+    np.testing.assert_allclose(mol.stress, expected)
+    np.testing.assert_allclose(mol.stress, mol.stress.T)  # symmetry sanity

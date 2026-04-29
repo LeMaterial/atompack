@@ -249,7 +249,7 @@ def test_database_add_arrays_batch_roundtrip_with_custom_properties(tmp_path: Pa
 
 
 @pytest.mark.parametrize("mmap", [False, True])
-@pytest.mark.parametrize("compression", ["none", "zstd"])
+@pytest.mark.parametrize("compression", ["none", "lz4", "zstd"])
 def test_database_single_item_reads_are_view_compatible(
     tmp_path: Path,
     mmap: bool,
@@ -283,7 +283,7 @@ def test_database_single_item_reads_are_view_compatible(
 
 
 @pytest.mark.parametrize("mmap", [False, True])
-@pytest.mark.parametrize("compression", ["none", "zstd"])
+@pytest.mark.parametrize("compression", ["none", "lz4", "zstd"])
 def test_database_custom_array_properties_roundtrip_all_numeric_tags(
     tmp_path: Path,
     mmap: bool,
@@ -349,7 +349,7 @@ def test_database_custom_array_properties_roundtrip_all_numeric_tags(
 
 
 @pytest.mark.parametrize("mmap", [False, True])
-@pytest.mark.parametrize("compression", ["none", "zstd"])
+@pytest.mark.parametrize("compression", ["none", "lz4", "zstd"])
 def test_database_single_item_mutation_is_copy_on_write(
     tmp_path: Path,
     mmap: bool,
@@ -392,7 +392,7 @@ def test_database_single_item_mutation_is_copy_on_write(
 
 
 @pytest.mark.parametrize("mmap", [False, True])
-@pytest.mark.parametrize("compression", ["none", "zstd"])
+@pytest.mark.parametrize("compression", ["none", "lz4", "zstd"])
 def test_database_single_item_pickle_materializes_owned_roundtrip(
     tmp_path: Path,
     mmap: bool,
@@ -577,3 +577,57 @@ def test_get_molecules_flat_empty(tmp_path: Path) -> None:
     assert batch["n_atoms"].shape == (0,)
     assert batch["positions"].shape == (0, 3)
     assert batch["atomic_numbers"].shape == (0,)
+
+
+def test_database_open_mmap_populate(tmp_path: Path) -> None:
+    # Smoke test for the documented populate=True path. On Linux this
+    # prefaults mapped pages via memmap2's PopulateRead advise; on macOS the
+    # advise is best-effort and silently ignored, so the assertion here is
+    # only that the open path succeeds and returns correct data — not that
+    # pages are actually faulted in. Pre-faulting performance is exercised
+    # in benchmarks/, not unit tests.
+    path = tmp_path / "populate.atp"
+    db = atompack.Database(str(path))
+    db.add_molecule(_make_molecule(-3.0))
+    db.flush()
+
+    db_r = atompack.Database.open(str(path), mmap=True, populate=True)
+    assert len(db_r) == 1
+    assert db_r[0].energy == pytest.approx(-3.0)
+
+
+def test_database_negative_indexing_raises_overflow_error(tmp_path: Path) -> None:
+    # Database does not support negative indexing today. PyO3 extracts the
+    # index argument as `usize`, so a negative integer raises OverflowError
+    # at the FFI boundary. If wraparound semantics are ever added, this
+    # test will fail loudly so the intent is explicit.
+    path = tmp_path / "negidx.atp"
+    db = atompack.Database(str(path))
+    db.add_molecule(_make_molecule(-1.0))
+    db.flush()
+
+    db_r = atompack.Database.open(str(path))
+    with pytest.raises(OverflowError, match=r"negative"):
+        _ = db_r[-1]
+
+
+def test_database_empty_molecule_roundtrip(tmp_path: Path) -> None:
+    # n_atoms == 0 is the SOA parser edge case; positions/atomic_numbers slices
+    # become zero-length and most code paths must still work.
+    path = tmp_path / "empty_mol.atp"
+    mol = atompack.Molecule.from_arrays(
+        np.zeros((0, 3), dtype=np.float32),
+        np.zeros((0,), dtype=np.uint8),
+        energy=0.0,
+    )
+
+    db = atompack.Database(str(path))
+    db.add_molecule(mol)
+    db.flush()
+
+    db_r = atompack.Database.open(str(path))
+    read = db_r[0]
+    assert len(read) == 0
+    assert read.positions.shape == (0, 3)
+    assert read.atomic_numbers.shape == (0,)
+    assert read.energy == pytest.approx(0.0)

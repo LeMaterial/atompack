@@ -262,3 +262,38 @@ def test_molecule_getitem_validation() -> None:
         _ = mol["does_not_exist"]
     with pytest.raises(TypeError, match=r"integers or strings"):
         _ = mol[1.5]
+
+
+def test_from_arrays_rejects_wrong_dtype_positions() -> None:
+    # positions must be float32; passing float64 should be rejected cleanly,
+    # not silently truncated or panic across the FFI boundary.
+    positions = np.zeros((2, 3), dtype=np.float64)  # wrong dtype
+    atomic_numbers = np.array([6, 8], dtype=np.uint8)
+    with pytest.raises((TypeError, ValueError)):
+        atompack.Molecule.from_arrays(positions, atomic_numbers)
+
+
+def test_from_arrays_rejects_wrong_dtype_atomic_numbers() -> None:
+    # atomic_numbers must be uint8; passing int64 should be rejected cleanly.
+    positions = np.zeros((2, 3), dtype=np.float32)
+    atomic_numbers = np.array([6, 8], dtype=np.int64)  # wrong dtype
+    with pytest.raises((TypeError, ValueError)):
+        atompack.Molecule.from_arrays(positions, atomic_numbers)
+
+
+def test_set_property_python_bool_pins_current_behavior() -> None:
+    # Pin the (perhaps surprising) current behavior: Python bool is a subclass
+    # of int, and PyO3 extracts it as i64 before f64. So set_property(True)
+    # stores Int(1), not Bool. This test locks in the current contract; if
+    # anyone wants real bool storage they should add a TYPE_BOOL tag and
+    # reorder extract attempts.
+    mol = _make_molecule()
+    mol.set_property("flag_true", True)
+    mol.set_property("flag_false", False)
+
+    flag_true = mol.get_property("flag_true")
+    flag_false = mol.get_property("flag_false")
+    assert isinstance(flag_true, int) and not isinstance(flag_true, bool)
+    assert flag_true == 1
+    assert isinstance(flag_false, int) and not isinstance(flag_false, bool)
+    assert flag_false == 0
