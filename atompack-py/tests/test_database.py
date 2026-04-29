@@ -577,3 +577,15 @@ def test_get_molecules_flat_empty(tmp_path: Path) -> None:
     assert batch["n_atoms"].shape == (0,)
     assert batch["positions"].shape == (0, 3)
     assert batch["atomic_numbers"].shape == (0,)
+
+
+def test_overlong_property_key_rejected_at_write(tmp_path: Path) -> None:
+    # Section keys are stored with a u8 length field; >255-byte keys would
+    # silently truncate before this fix, producing an unreadable record.
+    # The encoder now errors clearly instead.
+    mol = _make_molecule(-1.0)
+    mol.set_property("x" * 256, 1.0)
+
+    db = atompack.Database(str(tmp_path / "overlong.atp"))
+    with pytest.raises(ValueError, match=r"max is 255|too long|255 bytes"):
+        db.add_molecule(mol)

@@ -199,6 +199,19 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
                                 expected
                             )));
                         }
+                    } else if schema_entry.slot_bytes != 0
+                        && sec.payload.len() != schema_entry.slot_bytes
+                    {
+                        // Per-molecule slot: schema is set from molecule 0; if a later
+                        // molecule's payload disagrees, the memcpy below would OOB-write
+                        // into an adjacent slot from a parallel rayon thread.
+                        return Err(invalid_data(format!(
+                            "Per-molecule section '{}' has invalid payload length {} for molecule {} (schema slot is {})",
+                            sec.key,
+                            sec.payload.len(),
+                            i,
+                            schema_entry.slot_bytes
+                        )));
                     }
 
                     if schema_entry.slot_bytes == 0 {
