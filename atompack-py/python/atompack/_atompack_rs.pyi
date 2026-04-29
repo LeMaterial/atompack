@@ -321,6 +321,11 @@ class PyMolecule:
         -------
         Any
             Property value
+
+        Raises
+        ------
+        KeyError
+            If property key does not exist
         """
         ...
 
