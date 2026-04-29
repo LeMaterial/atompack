@@ -53,7 +53,19 @@ pub fn compress(data: &[u8], compression: CompressionType) -> Result<Vec<u8>> {
     }
 }
 
-/// Decompress bytes that were compressed with the specified algorithm
+/// Cap on the auto-derived decompressed-size hint when the caller passes
+/// `expected_size = None`. atompack's own callers always pass `Some(...)`
+/// from the index entry; this cap protects external callers of the public
+/// `decompress`/`decompress_bytes` re-export from accidental memory blowup
+/// (or `usize` overflow) on attacker-supplied or otherwise-large inputs.
+const DEFAULT_MAX_DECOMPRESSED_SIZE: usize = 1 << 30; // 1 GiB
+
+/// Decompress bytes that were compressed with the specified algorithm.
+///
+/// `expected_size` is the upper bound on the decompressed payload. When
+/// `None`, a heuristic derived from the compressed size is used, capped at
+/// 1 GiB so unbounded multiplication can't overflow `usize` or trigger a
+/// pathological allocation.
 pub fn decompress(
     compressed: &[u8],
     compression: CompressionType,
@@ -62,16 +74,31 @@ pub fn decompress(
     match compression {
         CompressionType::None => Ok(compressed.to_vec()),
         CompressionType::Lz4 => {
-            // LZ4 decompression - if we have expected size, use it as a hint
-            let max_size = expected_size.unwrap_or(compressed.len() * 100); // Conservative estimate
-            lz4::block::decompress(compressed, Some(max_size as i32))
+            let max_size = expected_size.unwrap_or_else(|| {
+                compressed
+                    .len()
+                    .saturating_mul(100)
+                    .min(DEFAULT_MAX_DECOMPRESSED_SIZE)
+            });
+            let max_i32: i32 = max_size.try_into().map_err(|_| {
+                Error::Compression(format!(
+                    "LZ4 decompressed-size hint {} exceeds i32::MAX",
+                    max_size
+                ))
+            })?;
+            lz4::block::decompress(compressed, Some(max_i32))
                 .map_err(|e| Error::Compression(format!("LZ4 decompression failed: {}", e)))
         }
-        CompressionType::Zstd(_) => zstd::bulk::decompress(
-            compressed,
-            expected_size.unwrap_or(compressed.len() * 10), // Estimate if not provided
-        )
-        .map_err(|e| Error::Compression(format!("Zstd decompression failed: {}", e))),
+        CompressionType::Zstd(_) => {
+            let capacity = expected_size.unwrap_or_else(|| {
+                compressed
+                    .len()
+                    .saturating_mul(10)
+                    .min(DEFAULT_MAX_DECOMPRESSED_SIZE)
+            });
+            zstd::bulk::decompress(compressed, capacity)
+                .map_err(|e| Error::Compression(format!("Zstd decompression failed: {}", e)))
+        }
     }
 }
 
@@ -112,6 +139,30 @@ mod tests {
             let decompressed = decompress(&compressed, *compression, Some(data.len())).unwrap();
             assert_eq!(data.as_slice(), decompressed.as_slice());
         }
+    }
+
+    #[test]
+    fn test_decompress_without_expected_size_does_not_panic() {
+        // Compressed inputs with no caller-supplied size hint must not panic
+        // on the internal heuristic, regardless of compressed length.
+        for compression in &[CompressionType::Lz4, CompressionType::Zstd(3)] {
+            let original = b"small payload";
+            let compressed = compress(original, *compression).unwrap();
+            let out = decompress(&compressed, *compression, None).unwrap();
+            assert_eq!(out.as_slice(), original.as_slice());
+        }
+    }
+
+    #[test]
+    fn test_decompress_lz4_rejects_size_hint_exceeding_i32() {
+        // The lz4 crate takes a signed i32 buffer-size hint; if the caller
+        // passes a usize larger than i32::MAX, decompress must error cleanly
+        // instead of silently wrapping.
+        let original = b"hello";
+        let compressed = compress(original, CompressionType::Lz4).unwrap();
+        let bad_hint = (i32::MAX as usize) + 1;
+        let err = decompress(&compressed, CompressionType::Lz4, Some(bad_hint));
+        assert!(err.is_err());
     }
 
     #[test]
