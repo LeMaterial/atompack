@@ -589,3 +589,46 @@ def test_overlong_property_key_rejected_at_write(tmp_path: Path) -> None:
     db = atompack.Database(str(tmp_path / "overlong.atp"))
     with pytest.raises(ValueError, match=r"max is 255|too long|255 bytes"):
         db.add_molecule(mol)
+
+
+def test_get_molecules_flat_rejects_per_mol_slot_mismatch(tmp_path: Path) -> None:
+    # get_molecules_flat derives slot_bytes from the first molecule's section
+    # payload. A later molecule with the same key but different payload length
+    # would have OOB-written into an adjacent buffer slot from a parallel
+    # rayon thread before this fix; the new length check catches it cleanly.
+    mol1 = _make_molecule(-1.0)
+    mol1.set_property("vec", np.array([1.0, 2.0], dtype=np.float64))  # 16 bytes
+
+    mol2 = _make_molecule(-2.0)
+    mol2.set_property("vec", np.array([1.0, 2.0, 3.0], dtype=np.float64))  # 24 bytes
+
+    path = tmp_path / "uneven.atp"
+    db = atompack.Database(str(path))
+    db.add_molecule(mol1)
+    db.add_molecule(mol2)
+    db.flush()
+
+    db_r = atompack.Database.open(str(path))
+    with pytest.raises(ValueError, match=r"invalid payload length|schema slot"):
+        db_r.get_molecules_flat([0, 1])
+
+
+def test_get_molecules_flat_rejects_per_mol_type_tag_mismatch(tmp_path: Path) -> None:
+    # If the same key shows up with a different dtype across molecules, the
+    # bytes would have been reinterpreted as the schema's dtype downstream.
+    # The new type-tag check catches this before the memcpy.
+    mol1 = _make_molecule(-1.0)
+    mol1.set_property("scalar", 1.5)  # TYPE_FLOAT (f64)
+
+    mol2 = _make_molecule(-2.0)
+    mol2.set_property("scalar", 7)  # TYPE_INT (i64), same 8-byte size
+
+    path = tmp_path / "tagmix.atp"
+    db = atompack.Database(str(path))
+    db.add_molecule(mol1)
+    db.add_molecule(mol2)
+    db.flush()
+
+    db_r = atompack.Database.open(str(path))
+    with pytest.raises(ValueError, match=r"type tag mismatch"):
+        db_r.get_molecules_flat([0, 1])
