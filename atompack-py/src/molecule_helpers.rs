@@ -621,7 +621,22 @@ fn section_is_atom_array(view: &SoaMoleculeView, section: &LazySection) -> bool 
 }
 
 fn is_reserved_ase_array_key(key: &str) -> bool {
-    matches!(key, "numbers" | "positions")
+    // ASE-reserved geometry keys plus atompack's builtin field names. A custom
+    // property named "forces" must not be shoveled into atoms.arrays["forces"]
+    // alongside the calculator-attached forces — that's the to_ase mirror of
+    // the from_ase duplicate-state bug.
+    matches!(
+        key,
+        "numbers"
+            | "positions"
+            | "energy"
+            | "forces"
+            | "charges"
+            | "velocities"
+            | "cell"
+            | "stress"
+            | "pbc"
+    )
 }
 
 fn owned_vec3_array<'py>(
