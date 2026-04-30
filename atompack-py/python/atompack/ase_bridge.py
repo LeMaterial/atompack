@@ -81,10 +81,16 @@ def _coerce_property(value, n_atoms):
 
 def _merge_properties(properties, builtins, values, n_atoms):
     for key, value in values.items():
-        if key == "stress":
-            arr = np.asarray(value)
-            if arr.shape == (3, 3) and arr.dtype.kind == "f":
-                builtins["stress"] = arr.astype(np.float64, copy=False)
+        if key in _BUILTIN_FIELDS:
+            # Builtin keys in atoms.info / info-override go to the builtins
+            # dict (when shape/dtype matches), never into custom properties.
+            # Without this guard, info["energy"] would land in both
+            # builtins["energy"] (from get_potential_energy) and
+            # properties["energy"], producing divergent state on round-trip.
+            if key == "stress":
+                arr = np.asarray(value)
+                if arr.shape == (3, 3) and arr.dtype.kind == "f":
+                    builtins["stress"] = arr.astype(np.float64, copy=False)
             continue
         coerced = _coerce_property(value, n_atoms)
         if coerced is not None:
@@ -174,10 +180,15 @@ def _extract_ase_record(
     arrays = getattr(atoms, "arrays", None)
     if isinstance(arrays, dict):
         for key, value in arrays.items():
-            if key not in {"positions", "numbers"}:
-                coerced = _coerce_property(value, n_atoms)
-                if coerced is not None:
-                    properties[key] = coerced
+            # Skip both ASE-reserved geometry keys ("positions", "numbers")
+            # and atompack builtin field names. A user who stashes "forces"
+            # in atoms.arrays must not have it duplicated into both
+            # builtins["forces"] (from get_forces()) and properties["forces"].
+            if key in _ASE_RESERVED_ARRAYS or key in _BUILTIN_FIELDS:
+                continue
+            coerced = _coerce_property(value, n_atoms)
+            if coerced is not None:
+                properties[key] = coerced
 
     calc = getattr(atoms, "calc", None)
     results = getattr(calc, "results", None)

@@ -192,6 +192,51 @@ def test_from_ase_extracts_arrays_and_calc_results() -> None:
         mol.get_property("forces")
 
 
+def test_from_ase_does_not_duplicate_builtins_into_custom_properties() -> None:
+    # When a user stashes a builtin field name (e.g. "forces", "energy",
+    # "pbc") inside atoms.arrays or atoms.info, the bridge must NOT also
+    # store it as a custom property. Otherwise round-tripping produces
+    # two divergent values per builtin field — one from the calculator
+    # path and one from the custom-property path.
+    forces_in_arrays = np.array([[9.9, 9.9, 9.9], [8.8, 8.8, 8.8]], dtype=np.float64)
+    atoms = FakeASEAtoms(
+        positions=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float64),
+        atomic_numbers=np.array([6, 8], dtype=np.int64),
+        forces=np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float64),
+        energy=-1.0,
+        arrays={
+            "positions": np.zeros((2, 3), dtype=np.float64),
+            "numbers": np.zeros((2,), dtype=np.int64),
+            # Hostile content: same key as a builtin. Should be ignored.
+            "forces": forces_in_arrays,
+            "charges": np.array([99.0, 99.0], dtype=np.float64),
+            # Plus a legitimate custom array.
+            "tags": np.array([1, 2], dtype=np.int32),
+        },
+        info={
+            "energy": -999.0,  # collides with builtin
+            "forces": forces_in_arrays,  # collides with builtin
+            "pbc": (True, True, True),  # collides with builtin
+            # Plus a legitimate custom info key.
+            "method": "DFT",
+        },
+    )
+
+    mol = atompack.from_ase(atoms)
+
+    # Builtins come from the calculator/getter path, not from arrays/info.
+    np.testing.assert_allclose(mol.forces, atoms.forces.astype(np.float32))
+    assert mol.energy == pytest.approx(-1.0)
+    # Legitimate custom keys still flow through.
+    np.testing.assert_array_equal(mol.get_property("tags"), np.array([1, 2], dtype=np.int32))
+    assert mol.get_property("method") == "DFT"
+    # Builtin keys must NOT show up as custom properties.
+    for builtin_key in ("forces", "energy", "charges", "velocities", "cell", "stress", "pbc"):
+        assert not mol.has_property(builtin_key), (
+            f"builtin key {builtin_key!r} leaked into custom properties"
+        )
+
+
 def test_add_ase_batch_roundtrip(tmp_path) -> None:
     path = tmp_path / "ase_batch.atp"
     atoms_list = [
