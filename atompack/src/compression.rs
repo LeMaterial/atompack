@@ -159,10 +159,16 @@ mod tests {
         // The heuristic must saturate (no overflow panic) and clamp to the
         // 1 GiB cap. Without the cap, len*multiplier is unbounded by usize::MAX.
         assert_eq!(auto_max_size(1024, 100), 102_400);
-        assert_eq!(auto_max_size(usize::MAX, 100), DEFAULT_MAX_DECOMPRESSED_SIZE);
+        assert_eq!(
+            auto_max_size(usize::MAX, 100),
+            DEFAULT_MAX_DECOMPRESSED_SIZE
+        );
         // Boundary: 11 MiB compressed × 100 = 1.1 GiB > cap.
         let just_above = (DEFAULT_MAX_DECOMPRESSED_SIZE / 100) + 1;
-        assert_eq!(auto_max_size(just_above, 100), DEFAULT_MAX_DECOMPRESSED_SIZE);
+        assert_eq!(
+            auto_max_size(just_above, 100),
+            DEFAULT_MAX_DECOMPRESSED_SIZE
+        );
     }
 
     #[test]
