@@ -237,6 +237,55 @@ def test_from_ase_does_not_duplicate_builtins_into_custom_properties() -> None:
         )
 
 
+def test_from_ase_info_override_kwarg_filters_builtins() -> None:
+    # The same filter must apply to the explicit info= kwarg of from_ase
+    # (the second caller of _merge_properties), not just atoms.info.
+    atoms = FakeASEAtoms(
+        positions=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float64),
+        atomic_numbers=np.array([6, 8], dtype=np.int64),
+        forces=np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float64),
+        energy=-1.0,
+    )
+    mol = atompack.from_ase(
+        atoms,
+        info={
+            "energy": -777.0,  # collides; must be ignored
+            "forces": np.zeros((2, 3), dtype=np.float64),  # collides; must be ignored
+            "method": "DFT",  # legitimate
+        },
+    )
+    np.testing.assert_allclose(mol.forces, atoms.forces.astype(np.float32))
+    assert mol.energy == pytest.approx(-1.0)
+    assert mol.get_property("method") == "DFT"
+    for builtin_key in ("forces", "energy", "charges", "velocities", "cell", "stress", "pbc"):
+        assert not mol.has_property(builtin_key)
+
+
+def test_to_ase_does_not_duplicate_builtins_in_arrays() -> None:
+    # to_ase mirror of the from_ase fix: even if a user explicitly stuffs a
+    # builtin name into custom properties via mol.set_property("forces", ...),
+    # to_ase must NOT shovel that custom value into atoms.arrays["forces"]
+    # next to the calculator-attached builtin forces. Otherwise round-tripping
+    # contaminates the ASE side.
+    mol = atompack.Molecule.from_arrays(
+        np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32),
+        np.array([6, 8], dtype=np.uint8),
+        forces=np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32),
+        energy=-1.0,
+    )
+    # Hostile: name a custom property after a builtin field.
+    mol.set_property("forces", np.array([[9.9, 9.9, 9.9], [8.8, 8.8, 8.8]], dtype=np.float32))
+    mol.set_property("tags", np.array([1, 2], dtype=np.int32))
+
+    ase_atoms = mol.to_ase()
+    # Calculator-attached forces are the source of truth.
+    np.testing.assert_allclose(ase_atoms.get_forces(), mol.forces)
+    # The hostile custom "forces" must NOT have landed in atoms.arrays.
+    assert "forces" not in ase_atoms.arrays
+    # Legitimate non-builtin custom property still flows through.
+    np.testing.assert_array_equal(ase_atoms.arrays["tags"], np.array([1, 2], dtype=np.int32))
+
+
 def test_add_ase_batch_roundtrip(tmp_path) -> None:
     path = tmp_path / "ase_batch.atp"
     atoms_list = [
