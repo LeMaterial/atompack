@@ -53,7 +53,31 @@ pub fn compress(data: &[u8], compression: CompressionType) -> Result<Vec<u8>> {
     }
 }
 
-/// Decompress bytes that were compressed with the specified algorithm
+/// Cap on the auto-derived decompressed-size hint when the caller passes
+/// `expected_size = None`. atompack's own callers always pass `Some(...)`
+/// from the index entry; this cap protects external callers of the public
+/// `decompress`/`decompress_bytes` re-export from accidental memory blowup
+/// (or `usize` overflow) on attacker-supplied or otherwise-large inputs.
+const DEFAULT_MAX_DECOMPRESSED_SIZE: usize = 1 << 30; // 1 GiB
+
+/// Compute the auto-derived decompressed-size hint.
+///
+/// Uses `saturating_mul` so the multiplication can't overflow `usize`, then
+/// clamps to `DEFAULT_MAX_DECOMPRESSED_SIZE` so a pathological compressed
+/// input can't drive an arbitrary allocation.
+fn auto_max_size(compressed_len: usize, multiplier: usize) -> usize {
+    compressed_len
+        .saturating_mul(multiplier)
+        .min(DEFAULT_MAX_DECOMPRESSED_SIZE)
+}
+
+/// Decompress bytes that were compressed with the specified algorithm.
+///
+/// `expected_size` is the upper bound on the decompressed payload. When
+/// `None`, a heuristic derived from the compressed size is used, capped at
+/// 1 GiB so unbounded multiplication can't overflow `usize` or trigger a
+/// pathological allocation. Callers that legitimately need >1 GiB outputs
+/// must pass an explicit `Some(n)`.
 pub fn decompress(
     compressed: &[u8],
     compression: CompressionType,
@@ -62,16 +86,21 @@ pub fn decompress(
     match compression {
         CompressionType::None => Ok(compressed.to_vec()),
         CompressionType::Lz4 => {
-            // LZ4 decompression - if we have expected size, use it as a hint
-            let max_size = expected_size.unwrap_or(compressed.len() * 100); // Conservative estimate
-            lz4::block::decompress(compressed, Some(max_size as i32))
+            let max_size = expected_size.unwrap_or_else(|| auto_max_size(compressed.len(), 100));
+            let max_i32: i32 = max_size.try_into().map_err(|_| {
+                Error::Compression(format!(
+                    "LZ4 decompressed-size hint {} exceeds i32::MAX",
+                    max_size
+                ))
+            })?;
+            lz4::block::decompress(compressed, Some(max_i32))
                 .map_err(|e| Error::Compression(format!("LZ4 decompression failed: {}", e)))
         }
-        CompressionType::Zstd(_) => zstd::bulk::decompress(
-            compressed,
-            expected_size.unwrap_or(compressed.len() * 10), // Estimate if not provided
-        )
-        .map_err(|e| Error::Compression(format!("Zstd decompression failed: {}", e))),
+        CompressionType::Zstd(_) => {
+            let capacity = expected_size.unwrap_or_else(|| auto_max_size(compressed.len(), 10));
+            zstd::bulk::decompress(compressed, capacity)
+                .map_err(|e| Error::Compression(format!("Zstd decompression failed: {}", e)))
+        }
     }
 }
 
@@ -111,6 +140,55 @@ mod tests {
             let compressed = compress(data, *compression).unwrap();
             let decompressed = decompress(&compressed, *compression, Some(data.len())).unwrap();
             assert_eq!(data.as_slice(), decompressed.as_slice());
+        }
+    }
+
+    #[test]
+    fn test_decompress_without_expected_size_roundtrips_small_input() {
+        // Sanity: small payloads with no caller-supplied size hint round-trip.
+        for compression in &[CompressionType::Lz4, CompressionType::Zstd(3)] {
+            let original = b"small payload";
+            let compressed = compress(original, *compression).unwrap();
+            let out = decompress(&compressed, *compression, None).unwrap();
+            assert_eq!(out.as_slice(), original.as_slice());
+        }
+    }
+
+    #[test]
+    fn test_auto_max_size_caps_at_default_max() {
+        // The heuristic must saturate (no overflow panic) and clamp to the
+        // 1 GiB cap. Without the cap, len*multiplier is unbounded by usize::MAX.
+        assert_eq!(auto_max_size(1024, 100), 102_400);
+        assert_eq!(
+            auto_max_size(usize::MAX, 100),
+            DEFAULT_MAX_DECOMPRESSED_SIZE
+        );
+        // Boundary: 11 MiB compressed × 100 = 1.1 GiB > cap.
+        let just_above = (DEFAULT_MAX_DECOMPRESSED_SIZE / 100) + 1;
+        assert_eq!(
+            auto_max_size(just_above, 100),
+            DEFAULT_MAX_DECOMPRESSED_SIZE
+        );
+    }
+
+    #[test]
+    fn test_decompress_lz4_rejects_size_hint_exceeding_i32() {
+        // The lz4 crate takes a signed i32 buffer-size hint. A usize hint
+        // larger than i32::MAX must surface a specific Compression error
+        // ("exceeds i32::MAX") instead of silently wrapping.
+        let original = b"hello";
+        let compressed = compress(original, CompressionType::Lz4).unwrap();
+        let bad_hint = (i32::MAX as usize) + 1;
+        let result = decompress(&compressed, CompressionType::Lz4, Some(bad_hint));
+        match result {
+            Err(Error::Compression(msg)) => {
+                assert!(
+                    msg.contains("exceeds i32::MAX"),
+                    "unexpected error message: {}",
+                    msg
+                );
+            }
+            other => panic!("expected Compression error, got {:?}", other),
         }
     }
 
