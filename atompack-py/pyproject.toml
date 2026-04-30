@@ -32,7 +32,6 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
-    "h5py>=3.10",
     "huggingface_hub>=0.24",
     "numpy>=1.20",
 ]
@@ -50,6 +49,12 @@ dev = [
     "pytest-benchmark",
     "mypy",
     "ruff",
+]
+# Used only by the comparison scripts under atompack-py/benchmarks/. Not
+# imported anywhere under python/atompack/, so it has no business in the
+# base wheel — pulls ~50 MB of HDF5 binaries onto every install.
+benchmarks = [
+    "h5py>=3.10",
 ]
 
 [tool.maturin]
