@@ -69,6 +69,11 @@ python_version = "3.8"
 warn_return_any = true
 warn_unused_configs = true
 
+[tool.pytest.ini_options]
+markers = [
+    "perf: opt-in throughput smoke tests",
+]
+
 [dependency-groups]
 docs = [
     "matplotlib",
