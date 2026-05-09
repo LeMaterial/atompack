@@ -34,6 +34,38 @@ From the repository root:
    make rust-test   # Rust tests only
    make py-test     # Python tests only (builds extension first)
 
+Throughput Smoke Tests
+----------------------
+
+Atompack has opt-in release-mode throughput smoke tests for changes that might affect storage,
+batch reads, Python bindings, or ingestion performance:
+
+.. code-block:: bash
+
+   make perf-smoke        # Rust + Python release throughput smoke tests
+   make perf-smoke-rust   # Rust storage smoke test only
+   make perf-smoke-py     # Python integration smoke test only
+
+These tests use a small 64-atom synthetic dataset and are designed to finish quickly, usually well
+under one minute on a warm development machine. They print a color-coded summary table with write,
+sequential-read, shuffled-read, and Python flat-batch throughput numbers, then compare them against
+conservative regression floors.
+
+Treat these numbers as smoke-test telemetry, not as publication benchmark results. The figures in
+:doc:`performance` come from larger benchmark scripts with explicit baselines, filesystem context,
+and reporting settings. The smoke tests are intentionally easier and exist to catch large
+performance regressions before running the full benchmark suite.
+
+The failure floors can be overridden when running on unusually small or large machines:
+
+.. code-block:: bash
+
+   ATOMPACK_RUST_MIN_SEQ_READ_MOL_S=100000 make perf-smoke-rust
+   ATOMPACK_PY_MIN_SHUFFLED_READ_MOL_S=100000 make perf-smoke-py
+
+The make targets default to color with ``ATOMPACK_PERF_COLOR=always``. Run
+``make ATOMPACK_PERF_COLOR=never perf-smoke`` when you need plain text logs.
+
 Docs
 ----
 

@@ -123,6 +123,7 @@ This repository uses `uv` for Python tooling:
 make ci-py
 make py-dev
 make docs
+make perf-smoke  # optional release throughput smoke tests
 ```
 
 Or run the Python tools directly:
