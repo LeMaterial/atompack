@@ -327,7 +327,7 @@ class Molecule:
 
         Raises
         ------
-        ValueError
+        KeyError
             If property key does not exist
         """
         ...

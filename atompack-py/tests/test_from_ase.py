@@ -130,7 +130,7 @@ def test_from_ase_extracts_core_fields() -> None:
         mol.stress,
         np.array([[1.1, 1.2, 1.3], [2.1, 2.2, 2.3], [3.1, 3.2, 3.3]], dtype=np.float64),
     )
-    with pytest.raises(ValueError, match=r"not found"):
+    with pytest.raises(KeyError, match=r"not found"):
         mol.get_property("stress")
 
     assert mol.has_property("unsupported") is False
@@ -188,7 +188,7 @@ def test_from_ase_extracts_arrays_and_calc_results() -> None:
         mol.get_property("magmoms"), np.array([0.3, 0.4], dtype=np.float64)
     )
     np.testing.assert_allclose(mol.stress, np.eye(3, dtype=np.float64) * 3.0)
-    with pytest.raises(ValueError, match=r"not found"):
+    with pytest.raises(KeyError, match=r"not found"):
         mol.get_property("forces")
 
 

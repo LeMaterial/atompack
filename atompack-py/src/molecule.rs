@@ -667,10 +667,7 @@ impl PyMolecule {
         if let Some(inner) = molecule.as_owned() {
             return match inner.properties.get(key) {
                 Some(v) => property_value_to_pyobject(py, v),
-                None => Err(PyValueError::new_err(format!(
-                    "Property '{}' not found",
-                    key
-                ))),
+                None => Err(PyKeyError::new_err(format!("Property '{}' not found", key))),
             };
         }
         let view = molecule.as_view().ok_or_else(|| {
@@ -678,10 +675,7 @@ impl PyMolecule {
         })?;
         match view.find_custom_section(KIND_MOL_PROP, key)? {
             Some(section) => property_section_to_pyobject(py, view, section),
-            None => Err(PyValueError::new_err(format!(
-                "Property '{}' not found",
-                key
-            ))),
+            None => Err(PyKeyError::new_err(format!("Property '{}' not found", key))),
         }
     }
 

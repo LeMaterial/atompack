@@ -387,7 +387,7 @@ def test_database_single_item_mutation_is_copy_on_write(
     assert fresh.energy == pytest.approx(-5.0)
     np.testing.assert_allclose(fresh.forces, original.forces)
     assert fresh.get_property("tag") == "train"
-    with pytest.raises(ValueError, match="Property 'new_ids' not found"):
+    with pytest.raises(KeyError, match="Property 'new_ids' not found"):
         fresh.get_property("new_ids")
 
 

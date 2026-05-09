@@ -225,10 +225,22 @@ def test_molecule_custom_properties() -> None:
         "vec3_f64",
     }
 
-    with pytest.raises(ValueError, match=r"not found"):
+    with pytest.raises(KeyError, match=r"not found"):
         mol.get_property("stress")
 
-    with pytest.raises(ValueError, match=r"not found"):
+    with pytest.raises(KeyError, match=r"not found"):
+        mol.get_property("does_not_exist")
+
+
+def test_missing_property_raises_keyerror_consistently() -> None:
+    # Lock in symmetry: both indexing patterns must raise the same exception
+    # type for missing custom properties. They previously disagreed.
+    mol = _make_molecule()
+    mol.set_property("method", "DFT")
+
+    with pytest.raises(KeyError, match=r"not found"):
+        _ = mol["does_not_exist"]
+    with pytest.raises(KeyError, match=r"not found"):
         mol.get_property("does_not_exist")
 
 
