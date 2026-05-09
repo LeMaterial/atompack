@@ -136,6 +136,33 @@ uv run --extra dev --locked --with "maturin>=1.4,<2.0" maturin develop
 uv run --extra dev --locked pytest
 ```
 
+### Coverage
+
+For Python coverage, install the extension module once, then run `pytest` with `pytest-cov` from the
+existing `uv` environment:
+
+```bash
+cd atompack-py
+uv run --extra dev --locked --with "maturin>=1.4,<2.0" maturin develop
+uv run --extra dev --locked --with pytest-cov \
+  pytest tests --ignore=tests/benchmarks \
+  --cov=atompack --cov-report=term-missing --cov-report=html
+```
+
+That measures the Python package surface, including calls that cross into the Rust extension through
+the installed bindings.
+
+For Rust coverage, use `cargo-llvm-cov` at the workspace root:
+
+```bash
+cargo install cargo-llvm-cov
+cargo llvm-cov --workspace --html
+```
+
+This reports coverage for the Rust crates directly. In practice, the most useful workflow here is to
+track both reports: Python coverage for the public API and integration paths, Rust coverage for the
+storage and serialization core.
+
 Rust entrypoints:
 
 ```bash
