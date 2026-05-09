@@ -817,7 +817,7 @@ pub(super) fn add_arrays_batch_impl(
             sections: &sections,
         })
         .map_err(PyValueError::new_err)?;
-        records.push((record, n_atoms as u32));
+        records.push((record, n_atoms as u32, positions_type));
     }
 
     py.detach(move || inner.add_owned_soa_records(records))

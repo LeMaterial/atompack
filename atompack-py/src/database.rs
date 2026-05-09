@@ -14,6 +14,7 @@ impl PyAtomDatabase {
     fn single_molecule_view(&self, py: Python<'_>, index: usize) -> PyResult<SoaMoleculeView> {
         let compression = self.inner.compression();
         let record_format = self.inner.record_format();
+        let positions_type = self.inner.positions_type();
         let use_mmap = self.inner.get_compressed_slice(0).is_some();
 
         if use_mmap {
@@ -23,7 +24,11 @@ impl PyAtomDatabase {
                         let bytes = self.inner.get_shared_mmap_bytes(index).ok_or_else(|| {
                             invalid_data(format!("Missing mmap bytes for molecule {}", index))
                         })?;
-                        SoaMoleculeView::from_shared_bytes_inner(bytes, record_format)
+                        SoaMoleculeView::from_shared_bytes_inner(
+                            bytes,
+                            record_format,
+                            positions_type,
+                        )
                     } else {
                         let compressed =
                             self.inner.get_compressed_slice(index).ok_or_else(|| {
@@ -44,7 +49,11 @@ impl PyAtomDatabase {
                             compression,
                             Some(uncompressed_size),
                         )?;
-                        SoaMoleculeView::from_bytes_inner(decompressed, record_format)
+                        SoaMoleculeView::from_bytes_inner(
+                            decompressed,
+                            record_format,
+                            positions_type,
+                        )
                     }
                 })
                 .map_err(|e| PyValueError::new_err(format!("{}", e)));
@@ -56,7 +65,7 @@ impl PyAtomDatabase {
         let raw = raw_bytes.pop().ok_or_else(|| {
             PyValueError::new_err(format!("Missing raw bytes for molecule {}", index))
         })?;
-        SoaMoleculeView::from_bytes(raw, record_format)
+        SoaMoleculeView::from_bytes(raw, record_format, positions_type)
     }
 }
 
@@ -118,16 +127,6 @@ impl PyAtomDatabase {
 
     /// Add a molecule to the database
     fn add_molecule(&mut self, molecule: &PyMolecule) -> PyResult<()> {
-        if let Some(view) = molecule.as_view()
-            && view.record_format == self.inner.record_format()
-        {
-            let soa_bytes = view.bytes.as_slice();
-            let n_atoms = view.n_atoms as u32;
-            return self
-                .inner
-                .add_raw_soa_records(&[(soa_bytes, n_atoms)])
-                .map_err(|e| PyValueError::new_err(format!("{}", e)));
-        }
         let owned = molecule.clone_as_owned()?;
         self.inner
             .add_molecule(&owned)
@@ -136,25 +135,10 @@ impl PyAtomDatabase {
 
     /// Add multiple molecules (processed in parallel)
     fn add_molecules(&mut self, molecules: Vec<PyRef<PyMolecule>>) -> PyResult<()> {
-        // Split into view-backed (fast path) and owned molecules
-        let mut raw_records: Vec<(&[u8], u32)> = Vec::new();
         let mut owned_molecules: Vec<Molecule> = Vec::new();
-        let record_format = self.inner.record_format();
 
         for m in &molecules {
-            if let Some(view) = m.as_view()
-                && view.record_format == record_format
-            {
-                raw_records.push((view.bytes.as_slice(), view.n_atoms as u32));
-            } else {
-                owned_molecules.push(m.clone_as_owned()?);
-            }
-        }
-
-        if !raw_records.is_empty() {
-            self.inner
-                .add_raw_soa_records(&raw_records)
-                .map_err(|e| PyValueError::new_err(format!("{}", e)))?;
+            owned_molecules.push(m.clone_as_owned()?);
         }
         if !owned_molecules.is_empty() {
             let mol_refs: Vec<&Molecule> = owned_molecules.iter().collect();
@@ -247,6 +231,7 @@ impl PyAtomDatabase {
 
         let compression = self.inner.compression();
         let record_format = self.inner.record_format();
+        let positions_type = self.inner.positions_type();
         let use_mmap = self.inner.get_compressed_slice(0).is_some();
 
         let views: Vec<SoaMoleculeView> = if use_mmap {
@@ -259,7 +244,11 @@ impl PyAtomDatabase {
                             let bytes = self.inner.get_shared_mmap_bytes(idx).ok_or_else(|| {
                                 invalid_data(format!("Missing mmap bytes for molecule {}", idx))
                             })?;
-                            SoaMoleculeView::from_shared_bytes_inner(bytes, record_format)
+                            SoaMoleculeView::from_shared_bytes_inner(
+                                bytes,
+                                record_format,
+                                positions_type,
+                            )
                         } else {
                             let compressed =
                                 self.inner.get_compressed_slice(idx).ok_or_else(|| {
@@ -280,7 +269,11 @@ impl PyAtomDatabase {
                                 compression,
                                 Some(uncompressed_size),
                             )?;
-                            SoaMoleculeView::from_bytes_inner(decompressed, record_format)
+                            SoaMoleculeView::from_bytes_inner(
+                                decompressed,
+                                record_format,
+                                positions_type,
+                            )
                         }
                     })
                     .collect()
@@ -292,7 +285,7 @@ impl PyAtomDatabase {
                 .map_err(|e| PyValueError::new_err(format!("{}", e)))?;
             raw_bytes
                 .into_iter()
-                .map(|bytes| SoaMoleculeView::from_bytes(bytes, record_format))
+                .map(|bytes| SoaMoleculeView::from_bytes(bytes, record_format, positions_type))
                 .collect::<PyResult<Vec<_>>>()
                 .map_err(|e| invalid_data(format!("{}", e)))
         }

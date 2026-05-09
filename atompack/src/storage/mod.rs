@@ -40,8 +40,8 @@ mod soa;
 use self::header::{Header, encode_header_slot, read_best_header};
 use self::index::{IndexStorage, MoleculeIndex, decode_index, encode_index};
 use self::soa::{
-    SchemaLock, arr, deserialize_molecule_soa, merge_schema_lock, record_schema,
-    serialize_molecule_soa,
+    SchemaLock, arr, decode_schema_lock, deserialize_molecule_soa, encode_schema_lock,
+    merge_schema_lock, record_schema, schema_from_molecule, serialize_molecule_soa,
 };
 
 // ---------------------------------------------------------------------------
@@ -141,6 +141,8 @@ impl AtomDatabase {
             num_molecules: 0,
             compression,
             record_format: RECORD_FORMAT_SOA,
+            schema_offset: 0,
+            schema_len: 0,
             index_offset: 0,
             index_len: 0,
         };
@@ -261,6 +263,15 @@ impl AtomDatabase {
             IndexStorage::InMemory(Vec::new())
         };
 
+        let schema_lock = if header.schema_offset > 0 && header.schema_len > 0 {
+            file.seek(SeekFrom::Start(header.schema_offset))?;
+            let mut schema_bytes = vec![0u8; header.schema_len as usize];
+            file.read_exact(&mut schema_bytes)?;
+            Some(decode_schema_lock(&schema_bytes)?)
+        } else {
+            None
+        };
+
         Ok(Self {
             path,
             compression: header.compression,
@@ -269,7 +280,7 @@ impl AtomDatabase {
             committed_end,
             truncate_tail_on_next_write,
             index,
-            schema_lock: None,
+            schema_lock,
             file: Some(file),
             data_mmap,
         })
@@ -289,7 +300,6 @@ impl AtomDatabase {
         }
 
         self.truncate_tail_on_next_write = false;
-        self.schema_lock = None;
         self.file = None;
         Ok(())
     }
@@ -297,6 +307,7 @@ impl AtomDatabase {
     fn rebuild_schema_lock(&self) -> Result<SchemaLock> {
         let mut lock = SchemaLock::default();
         let compression = self.compression;
+        let positions_type_hint = self.positions_type();
 
         if let Some(ref mmap) = self.data_mmap {
             for index in 0..self.index.len() {
@@ -311,7 +322,7 @@ impl AtomDatabase {
                     compression,
                     Some(entry.uncompressed_size as usize),
                 )?;
-                let record = record_schema(&bytes, self.record_format)?;
+                let record = record_schema(&bytes, self.record_format, positions_type_hint)?;
                 merge_schema_lock(&mut lock, &record)?;
             }
             return Ok(lock);
@@ -331,7 +342,7 @@ impl AtomDatabase {
                 compression,
                 Some(entry.uncompressed_size as usize),
             )?;
-            let record = record_schema(&bytes, self.record_format)?;
+            let record = record_schema(&bytes, self.record_format, positions_type_hint)?;
             merge_schema_lock(&mut lock, &record)?;
         }
         Ok(lock)
@@ -339,7 +350,7 @@ impl AtomDatabase {
 
     fn ensure_schema_compatible<'a, I>(&mut self, records: I) -> Result<()>
     where
-        I: IntoIterator<Item = &'a [u8]>,
+        I: IntoIterator<Item = (&'a [u8], Option<u8>)>,
     {
         let mut lock = match &self.schema_lock {
             Some(lock) => lock.clone(),
@@ -347,8 +358,9 @@ impl AtomDatabase {
             None => self.rebuild_schema_lock()?,
         };
 
-        for bytes in records {
-            let record = record_schema(bytes, self.record_format)?;
+        for (bytes, positions_type_hint) in records {
+            let hint = positions_type_hint.or(lock.positions_type);
+            let record = record_schema(bytes, self.record_format, hint)?;
             merge_schema_lock(&mut lock, &record)?;
         }
 
@@ -370,12 +382,16 @@ impl AtomDatabase {
             return Ok(());
         }
 
-        let serialized: Vec<(Vec<u8>, u32)> = molecules
+        let serialized: Vec<(Vec<u8>, u32, u8)> = molecules
             .par_iter()
             .map(|mol| {
                 let bytes = serialize_molecule_soa(mol, self.record_format)?;
                 let num_atoms = mol.len() as u32;
-                Ok((bytes, num_atoms))
+                Ok((
+                    bytes,
+                    num_atoms,
+                    schema_from_molecule(mol)?.positions_type.unwrap(),
+                ))
             })
             .collect::<Result<Vec<_>>>()?;
 
@@ -396,7 +412,7 @@ impl AtomDatabase {
     }
 
     #[doc(hidden)]
-    pub fn add_owned_soa_records(&mut self, records: Vec<(Vec<u8>, u32)>) -> Result<()> {
+    pub fn add_owned_soa_records(&mut self, records: Vec<(Vec<u8>, u32, u8)>) -> Result<()> {
         if records.is_empty() {
             return Ok(());
         }
@@ -412,7 +428,7 @@ impl AtomDatabase {
         }
 
         self.truncate_uncommitted_tail_if_needed()?;
-        self.ensure_schema_compatible(records.iter().map(|(bytes, _)| *bytes))?;
+        self.ensure_schema_compatible(records.iter().map(|(bytes, _)| (*bytes, None)))?;
 
         let compression = self.compression;
 
@@ -451,7 +467,7 @@ impl AtomDatabase {
         Ok(())
     }
 
-    fn append_owned_soa_records(&mut self, records: Vec<(Vec<u8>, u32)>) -> Result<()> {
+    fn append_owned_soa_records(&mut self, records: Vec<(Vec<u8>, u32, u8)>) -> Result<()> {
         if matches!(&self.index, IndexStorage::MemoryMapped { .. }) {
             return Err(Error::InvalidData(
                 "Cannot add molecules to a database opened with a memory-mapped index (read-only); reopen without mmap to write."
@@ -460,13 +476,17 @@ impl AtomDatabase {
         }
 
         self.truncate_uncommitted_tail_if_needed()?;
-        self.ensure_schema_compatible(records.iter().map(|(bytes, _)| bytes.as_slice()))?;
+        self.ensure_schema_compatible(
+            records
+                .iter()
+                .map(|(bytes, _, positions_type)| (bytes.as_slice(), Some(*positions_type))),
+        )?;
 
         let compression = self.compression;
 
         let compressed_records: Vec<(Vec<u8>, u32, u32)> = records
             .into_par_iter()
-            .map(|(bytes, num_atoms)| {
+            .map(|(bytes, num_atoms, _positions_type)| {
                 let uncompressed_size = bytes.len() as u32;
                 let compressed = compress(&bytes, compression)?;
                 Ok((compressed, uncompressed_size, num_atoms))
@@ -523,14 +543,16 @@ impl AtomDatabase {
             self.compression,
             Some(mol_index.uncompressed_size as usize),
         )?;
-        deserialize_molecule_soa(&decompressed, self.record_format)
+        deserialize_molecule_soa(&decompressed, self.record_format, self.positions_type())
     }
 
     /// Read multiple molecules in parallel.
     pub fn get_molecules(&self, indices: &[usize]) -> Result<Vec<Molecule>> {
         let raw = self.get_raw_bytes(indices)?;
         raw.into_par_iter()
-            .map(|bytes| deserialize_molecule_soa(&bytes, self.record_format))
+            .map(|bytes| {
+                deserialize_molecule_soa(&bytes, self.record_format, self.positions_type())
+            })
             .collect()
     }
 
@@ -618,8 +640,20 @@ impl AtomDatabase {
         };
 
         let index_bytes = encode_index(index_vec);
+        let schema_bytes = self
+            .schema_lock
+            .as_ref()
+            .map(encode_schema_lock)
+            .transpose()?;
 
         let mut file = OpenOptions::new().write(true).open(&self.path)?;
+        let schema_offset = file.seek(SeekFrom::End(0))?;
+        let schema_len = if let Some(schema_bytes) = &schema_bytes {
+            file.write_all(schema_bytes)?;
+            schema_bytes.len() as u64
+        } else {
+            0
+        };
         let index_offset = file.seek(SeekFrom::End(0))?;
         file.write_all(&index_bytes)?;
         file.flush()?;
@@ -633,6 +667,8 @@ impl AtomDatabase {
             num_molecules: self.index.len() as u64,
             compression: self.compression,
             record_format: self.record_format,
+            schema_offset: if schema_len > 0 { schema_offset } else { 0 },
+            schema_len,
             index_offset,
             index_len: index_bytes.len() as u64,
         };
@@ -672,6 +708,12 @@ impl AtomDatabase {
 
     pub fn record_format(&self) -> u32 {
         self.record_format
+    }
+
+    pub fn positions_type(&self) -> Option<u8> {
+        self.schema_lock
+            .as_ref()
+            .and_then(|lock| lock.positions_type)
     }
 
     /// Compressed bytes for a molecule from the mmap (None if no mmap).

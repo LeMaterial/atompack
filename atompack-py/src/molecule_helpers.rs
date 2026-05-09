@@ -224,19 +224,14 @@ pub(crate) fn build_soa_record(record: SoaRecord<'_>) -> Result<Vec<u8>, String>
         account_section(parsed.payload.len(), parsed.key.len());
     }
 
-    let positions_type_bytes = usize::from(record.record_format == RECORD_FORMAT_SOA_V3);
     let mut buf = Vec::with_capacity(
-        4 + positions_type_bytes
-            + record.positions.len()
+        4 + record.positions.len()
             + record.atomic_numbers.len()
             + 2
             + section_overhead
             + payload_bytes,
     );
     buf.extend_from_slice(&(n_atoms as u32).to_le_bytes());
-    if record.record_format == RECORD_FORMAT_SOA_V3 {
-        buf.push(record.positions_type);
-    }
     buf.extend_from_slice(record.positions);
     buf.extend_from_slice(record.atomic_numbers);
     buf.extend_from_slice(&n_sections.to_le_bytes());

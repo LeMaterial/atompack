@@ -7,6 +7,8 @@ pub(super) struct Header {
     pub(super) num_molecules: u64,
     pub(super) compression: CompressionType,
     pub(super) record_format: u32,
+    pub(super) schema_offset: u64,
+    pub(super) schema_len: u64,
     pub(super) index_offset: u64,
     pub(super) index_len: u64,
 }
@@ -30,18 +32,20 @@ pub(super) fn encode_header_slot(header: Header) -> [u8; HEADER_SLOT_SIZE] {
     slot[4..8].copy_from_slice(&FILE_FORMAT_VERSION.to_le_bytes());
     slot[8..16].copy_from_slice(&header.generation.to_le_bytes());
     slot[16..24].copy_from_slice(&header.data_start.to_le_bytes());
-    slot[24..32].copy_from_slice(&header.index_offset.to_le_bytes());
-    slot[32..40].copy_from_slice(&header.index_len.to_le_bytes());
-    slot[40..48].copy_from_slice(&header.num_molecules.to_le_bytes());
+    slot[24..32].copy_from_slice(&header.schema_offset.to_le_bytes());
+    slot[32..40].copy_from_slice(&header.schema_len.to_le_bytes());
+    slot[40..48].copy_from_slice(&header.index_offset.to_le_bytes());
+    slot[48..56].copy_from_slice(&header.index_len.to_le_bytes());
+    slot[56..64].copy_from_slice(&header.num_molecules.to_le_bytes());
 
     let (compression_type, compression_level) = match header.compression {
         CompressionType::None => (0u8, 0i32),
         CompressionType::Lz4 => (1u8, 0i32),
         CompressionType::Zstd(level) => (2u8, level),
     };
-    slot[48] = compression_type;
-    slot[52..56].copy_from_slice(&compression_level.to_le_bytes());
-    slot[56..60].copy_from_slice(&header.record_format.to_le_bytes());
+    slot[64] = compression_type;
+    slot[68..72].copy_from_slice(&compression_level.to_le_bytes());
+    slot[72..76].copy_from_slice(&header.record_format.to_le_bytes());
 
     let checksum = adler32(&slot[..HEADER_SLOT_SIZE - 4]);
     slot[HEADER_SLOT_SIZE - 4..HEADER_SLOT_SIZE].copy_from_slice(&checksum.to_le_bytes());
@@ -70,12 +74,14 @@ fn decode_header_slot(slot: &[u8; HEADER_SLOT_SIZE], file_size: u64) -> Option<H
 
     let generation = u64::from_le_bytes(slot[8..16].try_into().ok()?);
     let data_start = u64::from_le_bytes(slot[16..24].try_into().ok()?);
-    let index_offset = u64::from_le_bytes(slot[24..32].try_into().ok()?);
-    let index_len = u64::from_le_bytes(slot[32..40].try_into().ok()?);
-    let num_molecules = u64::from_le_bytes(slot[40..48].try_into().ok()?);
-    let compression_type = slot[48];
-    let compression_level = i32::from_le_bytes(slot[52..56].try_into().ok()?);
-    let record_format = u32::from_le_bytes(slot[56..60].try_into().ok()?);
+    let schema_offset = u64::from_le_bytes(slot[24..32].try_into().ok()?);
+    let schema_len = u64::from_le_bytes(slot[32..40].try_into().ok()?);
+    let index_offset = u64::from_le_bytes(slot[40..48].try_into().ok()?);
+    let index_len = u64::from_le_bytes(slot[48..56].try_into().ok()?);
+    let num_molecules = u64::from_le_bytes(slot[56..64].try_into().ok()?);
+    let compression_type = slot[64];
+    let compression_level = i32::from_le_bytes(slot[68..72].try_into().ok()?);
+    let record_format = u32::from_le_bytes(slot[72..76].try_into().ok()?);
 
     let compression = match compression_type {
         0 => CompressionType::None,
@@ -86,6 +92,17 @@ fn decode_header_slot(slot: &[u8; HEADER_SLOT_SIZE], file_size: u64) -> Option<H
 
     if data_start < HEADER_REGION_SIZE || data_start > file_size {
         return None;
+    }
+
+    if schema_offset == 0 || schema_len == 0 {
+        if schema_offset != 0 || schema_len != 0 {
+            return None;
+        }
+    } else {
+        let end = schema_offset.checked_add(schema_len)?;
+        if schema_offset < data_start || end > file_size {
+            return None;
+        }
     }
 
     if index_offset == 0 || index_len == 0 {
@@ -113,6 +130,8 @@ fn decode_header_slot(slot: &[u8; HEADER_SLOT_SIZE], file_size: u64) -> Option<H
         num_molecules,
         compression,
         record_format,
+        schema_offset,
+        schema_len,
         index_offset,
         index_len,
     })

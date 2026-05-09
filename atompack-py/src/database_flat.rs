@@ -44,29 +44,20 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
                 .ok_or_else(|| invalid_data("missing final atom offset"))?;
 
             let record_format = inner.record_format();
+            let positions_type = inner
+                .positions_type()
+                .ok_or_else(|| invalid_data("Missing position dtype for batch"))?;
             let (raw_bytes, _) = inner.read_decompress_parallel(&indices)?;
 
-            let mut positions_type: Option<u8> = None;
             let mut schema: Vec<SectionSchema> = Vec::new();
             for bytes in &raw_bytes {
-                let md = parse_mol_fast_soa(bytes, record_format)?;
-                match positions_type {
-                    None => positions_type = Some(md.positions_type),
-                    Some(expected) if expected != md.positions_type => {
-                        return Err(invalid_data(format!(
-                            "Position dtype mismatch across selected molecules: expected type tag {}, got {}",
-                            expected, md.positions_type
-                        )));
-                    }
-                    _ => {}
-                }
+                let md = parse_mol_fast_soa(bytes, record_format, Some(positions_type))?;
 
                 for section in &md.sections {
                     let incoming = section_schema_from_ref(section, md.n_atoms)?;
-                    if let Some(existing) = schema
-                        .iter()
-                        .find(|candidate| candidate.kind == incoming.kind && candidate.key == incoming.key)
-                    {
+                    if let Some(existing) = schema.iter().find(|candidate| {
+                        candidate.kind == incoming.kind && candidate.key == incoming.key
+                    }) {
                         if existing.type_tag != incoming.type_tag
                             || existing.per_atom != incoming.per_atom
                             || existing.elem_bytes != incoming.elem_bytes
@@ -82,9 +73,6 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
                     }
                 }
             }
-            let positions_type =
-                positions_type.ok_or_else(|| invalid_data("Missing position dtype for batch"))?;
-
             let positions_stride = match positions_type {
                 TYPE_VEC3_F32 => 12usize,
                 TYPE_VEC3_F64 => 24usize,
@@ -144,15 +132,9 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
                     .collect();
 
             let process_mol = |i: usize, mol_bytes: &[u8]| -> atompack::Result<()> {
-                let md = parse_mol_fast_soa(mol_bytes, record_format)?;
+                let md = parse_mol_fast_soa(mol_bytes, record_format, Some(positions_type))?;
                 let atom_off = offsets[i];
                 let n = md.n_atoms;
-                if md.positions_type != positions_type {
-                    return Err(invalid_data(format!(
-                        "Position dtype mismatch for molecule {}: expected type tag {}, got {}",
-                        i, positions_type, md.positions_type
-                    )));
-                }
 
                 unsafe {
                     std::ptr::copy_nonoverlapping(
@@ -168,9 +150,10 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
                 }
 
                 for (section_idx, schema_entry) in schema.iter().enumerate() {
-                    let sec = md.sections.iter().find(|sec| {
-                        sec.kind == schema_entry.kind && sec.key == schema_entry.key
-                    });
+                    let sec = md
+                        .sections
+                        .iter()
+                        .find(|sec| sec.kind == schema_entry.kind && sec.key == schema_entry.key);
                     let Some(sec) = sec else {
                         continue;
                     };

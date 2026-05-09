@@ -129,7 +129,6 @@ struct SectionRef<'a> {
 /// Per-molecule extracted data (references into decompressed bytes).
 struct MolData<'a> {
     n_atoms: usize,
-    positions_type: u8,
     positions_bytes: &'a [u8],
     atomic_numbers_bytes: &'a [u8], // n_atoms
     sections: Vec<SectionRef<'a>>,
@@ -148,15 +147,20 @@ struct SectionSchema {
 /// Parse SOA format bytes into MolData without allocation.
 ///
 /// Layout:
-///   [n_atoms:u32][positions:n*12][atomic_numbers:n]
+///   [n_atoms:u32][positions:n*(12|24)][atomic_numbers:n]
 ///   [n_sections:u16]
 ///   per section: [kind:u8][key_len:u8][key][type_tag:u8][payload_len:u32][payload]
-fn parse_mol_fast_soa(bytes: &[u8], record_format: u32) -> atompack::Result<MolData<'_>> {
+fn parse_mol_fast_soa(
+    bytes: &[u8],
+    record_format: u32,
+    positions_type_hint: Option<u8>,
+) -> atompack::Result<MolData<'_>> {
     let mut pos = 0usize;
     let n_atoms = read_u32_le_at(bytes, &mut pos, "SOA n_atoms")? as usize;
     let positions_type = match record_format {
         RECORD_FORMAT_SOA_V2 => TYPE_VEC3_F32,
-        RECORD_FORMAT_SOA_V3 => read_u8_at(bytes, &mut pos, "SOA positions type")?,
+        RECORD_FORMAT_SOA_V3 => positions_type_hint
+            .ok_or_else(|| invalid_data("Missing positions dtype for record format 3"))?,
         _ => {
             return Err(invalid_data(format!(
                 "Unsupported record format {}",
@@ -201,7 +205,6 @@ fn parse_mol_fast_soa(bytes: &[u8], record_format: u32) -> atompack::Result<MolD
 
     Ok(MolData {
         n_atoms,
-        positions_type,
         positions_bytes,
         atomic_numbers_bytes,
         sections,
@@ -385,7 +388,6 @@ impl std::ops::Deref for SoaBytes {
 
 struct SoaMoleculeView {
     bytes: SoaBytes,
-    record_format: u32,
     n_atoms: usize,
     positions_type: u8,
     positions_start: usize,
@@ -406,7 +408,11 @@ struct SoaMoleculeView {
 
 impl SoaMoleculeView {
     /// Pure-Rust parser — no Python dependency, safe to call from rayon threads.
-    fn from_storage_inner(bytes: SoaBytes, record_format: u32) -> atompack::Result<Self> {
+    fn from_storage_inner(
+        bytes: SoaBytes,
+        record_format: u32,
+        positions_type_hint: Option<u8>,
+    ) -> atompack::Result<Self> {
         if bytes.len() < 6 {
             return Err(invalid_data("SOA record too small"));
         }
@@ -415,14 +421,8 @@ impl SoaMoleculeView {
         let mut pos = 4usize;
         let positions_type = match record_format {
             RECORD_FORMAT_SOA_V2 => TYPE_VEC3_F32,
-            RECORD_FORMAT_SOA_V3 => {
-                if pos + 1 > bytes.len() {
-                    return Err(invalid_data("SOA record truncated at positions type"));
-                }
-                let tag = bytes[pos];
-                pos += 1;
-                tag
-            }
+            RECORD_FORMAT_SOA_V3 => positions_type_hint
+                .ok_or_else(|| invalid_data("Missing positions dtype for record format 3"))?,
             _ => {
                 return Err(invalid_data(format!(
                     "Unsupported record format {}",
@@ -541,7 +541,6 @@ impl SoaMoleculeView {
 
         Ok(Self {
             bytes,
-            record_format,
             n_atoms,
             positions_type,
             positions_start,
@@ -559,20 +558,29 @@ impl SoaMoleculeView {
         })
     }
 
-    fn from_bytes_inner(bytes: Vec<u8>, record_format: u32) -> atompack::Result<Self> {
-        Self::from_storage_inner(SoaBytes::Owned(bytes), record_format)
+    fn from_bytes_inner(
+        bytes: Vec<u8>,
+        record_format: u32,
+        positions_type_hint: Option<u8>,
+    ) -> atompack::Result<Self> {
+        Self::from_storage_inner(SoaBytes::Owned(bytes), record_format, positions_type_hint)
     }
 
     fn from_shared_bytes_inner(
         bytes: SharedMmapBytes,
         record_format: u32,
+        positions_type_hint: Option<u8>,
     ) -> atompack::Result<Self> {
-        Self::from_storage_inner(SoaBytes::Shared(bytes), record_format)
+        Self::from_storage_inner(SoaBytes::Shared(bytes), record_format, positions_type_hint)
     }
 
     /// Thin wrapper for call sites that need PyResult.
-    fn from_bytes(bytes: Vec<u8>, record_format: u32) -> PyResult<Self> {
-        Self::from_bytes_inner(bytes, record_format)
+    fn from_bytes(
+        bytes: Vec<u8>,
+        record_format: u32,
+        positions_type_hint: Option<u8>,
+    ) -> PyResult<Self> {
+        Self::from_bytes_inner(bytes, record_format, positions_type_hint)
             .map_err(|e| PyValueError::new_err(format!("{}", e)))
     }
 
