@@ -12,7 +12,9 @@ pub mod atom;
 pub mod compression;
 pub mod storage;
 
-pub use atom::{Atom, Molecule};
+pub use atom::{
+    Atom, FloatArrayData, FloatScalarData, Mat3Data, Molecule, PropertyValue, Vec3Data,
+};
 pub use compression::decompress as decompress_bytes;
 pub use storage::{AtomDatabase, SharedMmapBytes};
 

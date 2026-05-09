@@ -43,68 +43,59 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
                 .copied()
                 .ok_or_else(|| invalid_data("missing final atom offset"))?;
 
-            let compression = inner.compression();
-            let use_mmap = inner.get_compressed_slice(0).is_some();
+            let record_format = inner.record_format();
+            let (raw_bytes, _) = inner.read_decompress_parallel(&indices)?;
 
-            let raw_bytes_owned: Option<Vec<Vec<u8>>>;
-            let schema: Vec<SectionSchema>;
-
-            if use_mmap {
-                if compression == CompressionType::None {
-                    let shared = inner.get_shared_mmap_bytes(indices[0]).ok_or_else(|| {
-                        invalid_data(format!("Missing mmap bytes for molecule {}", indices[0]))
-                    })?;
-                    let first_md = parse_mol_fast_soa(shared.as_slice())?;
-                    let n = first_md.n_atoms;
-                    schema = first_md
-                        .sections
-                        .iter()
-                        .map(|s| section_schema_from_ref(s, n))
-                        .collect::<atompack::Result<_>>()?;
-                } else {
-                    let compressed = inner.get_compressed_slice(indices[0]).ok_or_else(|| {
-                        invalid_data(format!(
-                            "Missing compressed bytes for molecule {}",
-                            indices[0]
-                        ))
-                    })?;
-                    let uncompressed_size =
-                        inner.uncompressed_size(indices[0]).ok_or_else(|| {
-                            invalid_data(format!(
-                                "Missing uncompressed size for molecule {}",
-                                indices[0]
-                            ))
-                        })? as usize;
-                    let first_bytes = atompack::decompress_bytes(
-                        compressed,
-                        compression,
-                        Some(uncompressed_size),
-                    )?;
-                    let first_md = parse_mol_fast_soa(&first_bytes)?;
-                    let n = first_md.n_atoms;
-                    schema = first_md
-                        .sections
-                        .iter()
-                        .map(|s| section_schema_from_ref(s, n))
-                        .collect::<atompack::Result<_>>()?;
+            let mut positions_type: Option<u8> = None;
+            let mut schema: Vec<SectionSchema> = Vec::new();
+            for bytes in &raw_bytes {
+                let md = parse_mol_fast_soa(bytes, record_format)?;
+                match positions_type {
+                    None => positions_type = Some(md.positions_type),
+                    Some(expected) if expected != md.positions_type => {
+                        return Err(invalid_data(format!(
+                            "Position dtype mismatch across selected molecules: expected type tag {}, got {}",
+                            expected, md.positions_type
+                        )));
+                    }
+                    _ => {}
                 }
-                raw_bytes_owned = None;
-            } else {
-                let (raw_bytes, _) = inner.read_decompress_parallel(&indices)?;
-                let first_md = parse_mol_fast_soa(&raw_bytes[0])?;
-                let n = first_md.n_atoms;
-                schema = first_md
-                    .sections
-                    .iter()
-                    .map(|s| section_schema_from_ref(s, n))
-                    .collect::<atompack::Result<_>>()?;
-                raw_bytes_owned = Some(raw_bytes);
+
+                for section in &md.sections {
+                    let incoming = section_schema_from_ref(section, md.n_atoms)?;
+                    if let Some(existing) = schema
+                        .iter()
+                        .find(|candidate| candidate.kind == incoming.kind && candidate.key == incoming.key)
+                    {
+                        if existing.type_tag != incoming.type_tag
+                            || existing.per_atom != incoming.per_atom
+                            || existing.elem_bytes != incoming.elem_bytes
+                            || existing.slot_bytes != incoming.slot_bytes
+                        {
+                            return Err(invalid_data(format!(
+                                "SOA schema mismatch for section '{}'",
+                                incoming.key
+                            )));
+                        }
+                    } else {
+                        schema.push(incoming);
+                    }
+                }
             }
+            let positions_type =
+                positions_type.ok_or_else(|| invalid_data("Missing position dtype for batch"))?;
 
-            let schema_keys: Vec<(u8, &[u8])> =
-                schema.iter().map(|s| (s.kind, s.key.as_bytes())).collect();
-
-            let mut positions = vec![0f32; total_atoms * 3];
+            let positions_stride = match positions_type {
+                TYPE_VEC3_F32 => 12usize,
+                TYPE_VEC3_F64 => 24usize,
+                _ => {
+                    return Err(invalid_data(format!(
+                        "Unsupported positions type tag {}",
+                        positions_type
+                    )));
+                }
+            };
+            let mut positions = vec![0u8; total_atoms * positions_stride];
             let mut atomic_numbers = vec![0u8; total_atoms];
 
             let mut section_buffers: Vec<Vec<u8>> = schema
@@ -153,23 +144,21 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
                     .collect();
 
             let process_mol = |i: usize, mol_bytes: &[u8]| -> atompack::Result<()> {
-                let md = parse_mol_fast_soa(mol_bytes)?;
+                let md = parse_mol_fast_soa(mol_bytes, record_format)?;
                 let atom_off = offsets[i];
                 let n = md.n_atoms;
-                if md.sections.len() != schema.len() {
+                if md.positions_type != positions_type {
                     return Err(invalid_data(format!(
-                        "SOA schema mismatch for molecule {}: expected {} sections, got {}",
-                        i,
-                        schema.len(),
-                        md.sections.len()
+                        "Position dtype mismatch for molecule {}: expected type tag {}, got {}",
+                        i, positions_type, md.positions_type
                     )));
                 }
 
                 unsafe {
                     std::ptr::copy_nonoverlapping(
                         md.positions_bytes.as_ptr(),
-                        pos_buf.at(atom_off * 3) as *mut u8,
-                        n * 12,
+                        pos_buf.at(atom_off * positions_stride),
+                        n * positions_stride,
                     );
                     std::ptr::copy_nonoverlapping(
                         md.atomic_numbers_bytes.as_ptr(),
@@ -178,15 +167,21 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
                     );
                 }
 
-                for (section_idx, sec) in md.sections.iter().enumerate() {
-                    let schema_entry = &schema[section_idx];
-                    let expected_key = &schema_keys[section_idx];
-                    if sec.kind != expected_key.0 || sec.key.as_bytes() != expected_key.1 {
+                for (section_idx, schema_entry) in schema.iter().enumerate() {
+                    let sec = md.sections.iter().find(|sec| {
+                        sec.kind == schema_entry.kind && sec.key == schema_entry.key
+                    });
+                    let Some(sec) = sec else {
+                        continue;
+                    };
+
+                    if sec.type_tag != schema_entry.type_tag {
                         return Err(invalid_data(format!(
-                            "SOA schema order mismatch at molecule {} for section '{}'",
+                            "SOA schema mismatch at molecule {} for section '{}'",
                             i, sec.key
                         )));
                     }
+
                     if schema_entry.per_atom {
                         let expected = n.checked_mul(schema_entry.elem_bytes).ok_or_else(|| {
                             invalid_data(format!("Section '{}' payload length overflow", sec.key))
@@ -199,6 +194,15 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
                                 expected
                             )));
                         }
+                    } else if schema_entry.slot_bytes != 0
+                        && sec.payload.len() != schema_entry.slot_bytes
+                    {
+                        return Err(invalid_data(format!(
+                            "Section '{}' has invalid payload length {} (expected {})",
+                            sec.key,
+                            sec.payload.len(),
+                            schema_entry.slot_bytes
+                        )));
                     }
 
                     if schema_entry.slot_bytes == 0 {
@@ -237,51 +241,16 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
                 Ok(())
             };
 
-            let results: Vec<atompack::Result<()>> = if use_mmap {
-                (0..n_mols)
-                    .into_par_iter()
-                    .map(|i| {
-                        let idx = indices[i];
-                        if compression == CompressionType::None {
-                            let shared = inner.get_shared_mmap_bytes(idx).ok_or_else(|| {
-                                invalid_data(format!("Missing mmap bytes for molecule {}", idx))
-                            })?;
-                            process_mol(i, shared.as_slice())
-                        } else {
-                            let compressed = inner.get_compressed_slice(idx).ok_or_else(|| {
-                                invalid_data(format!(
-                                    "Missing compressed bytes for molecule {}",
-                                    idx
-                                ))
-                            })?;
-                            let uncompressed_size =
-                                inner.uncompressed_size(idx).ok_or_else(|| {
-                                    invalid_data(format!(
-                                        "Missing uncompressed size for molecule {}",
-                                        idx
-                                    ))
-                                })? as usize;
-                            let decompressed = atompack::decompress_bytes(
-                                compressed,
-                                compression,
-                                Some(uncompressed_size),
-                            )?;
-                            process_mol(i, &decompressed)
-                        }
-                    })
-                    .collect()
-            } else {
-                let raw_bytes = raw_bytes_owned.unwrap();
-                raw_bytes
-                    .par_iter()
-                    .enumerate()
-                    .map(|(i, bytes)| process_mol(i, bytes))
-                    .collect()
-            };
+            let results: Vec<atompack::Result<()>> = raw_bytes
+                .par_iter()
+                .enumerate()
+                .map(|(i, bytes)| process_mol(i, bytes))
+                .collect();
             results.into_iter().collect::<atompack::Result<Vec<_>>>()?;
 
             Ok(Some((
                 n_atoms_vec,
+                positions_type,
                 positions,
                 atomic_numbers,
                 schema,
@@ -295,6 +264,7 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
 
     let (
         n_atoms_vec,
+        positions_type,
         positions,
         atomic_numbers,
         schema,
@@ -320,12 +290,22 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
 
     let dict = PyDict::new(py);
     dict.set_item("n_atoms", PyArray1::from_vec(py, n_atoms_vec))?;
-    dict.set_item(
-        "positions",
-        PyArray1::from_vec(py, positions)
-            .reshape([total_atoms, 3])
-            .map_err(|e| PyValueError::new_err(format!("{}", e)))?,
-    )?;
+    match positions_type {
+        TYPE_VEC3_F32 => {
+            let arr = cast_or_decode_f32(&positions)?;
+            dict.set_item("positions", pyarray2_from_cow(py, arr, total_atoms, 3)?)?;
+        }
+        TYPE_VEC3_F64 => {
+            let arr = cast_or_decode_f64(&positions)?;
+            dict.set_item("positions", pyarray2_from_cow(py, arr, total_atoms, 3)?)?;
+        }
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "Unsupported positions type tag {}",
+                other
+            )));
+        }
+    }
     dict.set_item("atomic_numbers", PyArray1::from_vec(py, atomic_numbers))?;
 
     let atom_props_dict = PyDict::new(py);
@@ -359,6 +339,10 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
         match s.type_tag {
             TYPE_FLOAT => {
                 let arr = cast_or_decode_f64(&buf)?;
+                target.set_item(&s.key, pyarray1_from_cow(py, arr))?;
+            }
+            TYPE_FLOAT32 => {
+                let arr = cast_or_decode_f32(&buf)?;
                 target.set_item(&s.key, pyarray1_from_cow(py, arr))?;
             }
             TYPE_INT => {
@@ -403,6 +387,16 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
             }
             TYPE_MAT3X3_F64 => {
                 let arr = cast_or_decode_f64(&buf)?;
+                let n = arr.len() / 9;
+                target.set_item(
+                    &s.key,
+                    pyarray1_from_cow(py, arr)
+                        .reshape([n, 3, 3])
+                        .map_err(|e| PyValueError::new_err(format!("{}", e)))?,
+                )?;
+            }
+            TYPE_MAT3X3_F32 => {
+                let arr = cast_or_decode_f32(&buf)?;
                 let n = arr.len() / 9;
                 target.set_item(
                     &s.key,

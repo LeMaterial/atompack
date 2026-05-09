@@ -59,13 +59,11 @@ enum MoleculeBacking {
 mod helpers;
 
 pub(crate) use self::helpers::{
-    SoaBuiltinPayloads, SoaCustomSection, build_soa_record_with_custom, cast_or_decode_f32,
-    cast_or_decode_f64, cast_or_decode_i32, cast_or_decode_i64, pyarray1_from_cow,
-    pyarray2_from_cow,
+    SoaRecord, SoaSection, build_soa_record, cast_or_decode_f32, cast_or_decode_f64,
+    cast_or_decode_i32, cast_or_decode_i64, parse_float_array_field, parse_mat3_field,
+    parse_vec3_field, pyarray1_from_cow, pyarray2_from_cow,
 };
-use self::helpers::{
-    into_py_any, property_section_to_pyobject, property_value_to_pyobject, pyarray2_from_flat,
-};
+use self::helpers::{into_py_any, property_section_to_pyobject, property_value_to_pyobject};
 
 #[pymethods]
 impl PyMolecule {
@@ -87,13 +85,13 @@ impl PyMolecule {
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
-        positions: &Bound<'_, PyArray2<f32>>,
+        positions: &Bound<'_, PyAny>,
         atomic_numbers: &Bound<'_, PyArray1<u8>>,
         energy: Option<f64>,
-        forces: Option<&Bound<'_, PyArray2<f32>>>,
-        charges: Option<&Bound<'_, PyArray1<f64>>>,
-        velocities: Option<&Bound<'_, PyArray2<f32>>>,
-        cell: Option<&Bound<'_, PyArray2<f64>>>,
+        forces: Option<Py<PyAny>>,
+        charges: Option<Py<PyAny>>,
+        velocities: Option<Py<PyAny>>,
+        cell: Option<Py<PyAny>>,
         stress: Option<Py<PyAny>>,
         pbc: Option<(bool, bool, bool)>,
         name: Option<String>,
@@ -113,17 +111,7 @@ impl PyMolecule {
         )
     }
 
-    /// Create a molecule from numpy arrays (fast path).
-    ///
-    /// Parameters:
-    /// - positions: float32 array of shape (n_atoms, 3)
-    /// - atomic_numbers: uint8 array of shape (n_atoms,)
-    /// - builtins: optional keyword arguments such as energy, forces, charges,
-    ///   velocities, cell, stress, pbc, and name
-    ///
-    /// Builds an SOA view directly from the numpy buffers — no intermediate
-    /// Atom structs are created. If you later mutate the molecule (e.g. set
-    /// energy), it will be materialized on demand.
+    /// Create a molecule from numpy arrays.
     #[staticmethod]
     #[pyo3(signature = (
         positions,
@@ -141,13 +129,13 @@ impl PyMolecule {
     #[allow(clippy::too_many_arguments)]
     fn from_arrays(
         py: Python<'_>,
-        positions: &Bound<'_, PyArray2<f32>>,
+        positions: &Bound<'_, PyAny>,
         atomic_numbers: &Bound<'_, PyArray1<u8>>,
         energy: Option<f64>,
-        forces: Option<&Bound<'_, PyArray2<f32>>>,
-        charges: Option<&Bound<'_, PyArray1<f64>>>,
-        velocities: Option<&Bound<'_, PyArray2<f32>>>,
-        cell: Option<&Bound<'_, PyArray2<f64>>>,
+        forces: Option<Py<PyAny>>,
+        charges: Option<Py<PyAny>>,
+        velocities: Option<Py<PyAny>>,
+        cell: Option<Py<PyAny>>,
         stress: Option<Py<PyAny>>,
         pbc: Option<(bool, bool, bool)>,
         name: Option<String>,
@@ -214,9 +202,9 @@ impl PyMolecule {
         copy_arrays: bool,
     ) -> PyResult<Bound<'py, PyTuple>> {
         let numbers = self.atomic_numbers_py(py)?.into_any().unbind();
-        let positions = self.positions_py(py)?.into_any().unbind();
+        let positions = self.positions_py(py)?;
         let cell = match self.cell_py(py)? {
-            Some(value) => value.into_any().unbind(),
+            Some(value) => value,
             None => py.None(),
         };
         let pbc = match self.pbc()? {
@@ -224,7 +212,7 @@ impl PyMolecule {
             None => py.None(),
         };
         let velocities = match self.velocities_py(py)? {
-            Some(value) => value.into_any().unbind(),
+            Some(value) => value,
             None => py.None(),
         };
         let energy = match self.energy()? {
@@ -232,15 +220,15 @@ impl PyMolecule {
             None => py.None(),
         };
         let forces = match self.forces_py(py)? {
-            Some(value) => value.into_any().unbind(),
+            Some(value) => value,
             None => py.None(),
         };
         let stress = match self.stress_py(py)? {
-            Some(value) => value.into_any().unbind(),
+            Some(value) => value,
             None => py.None(),
         };
         let charges = match self.charges_py(py)? {
-            Some(value) => value.into_any().unbind(),
+            Some(value) => value,
             None => py.None(),
         };
 
@@ -299,59 +287,16 @@ impl PyMolecule {
 
     /// forces property (getter)
     #[getter]
-    fn forces<'py>(slf: Bound<'py, Self>) -> PyResult<Option<Bound<'py, PyArray2<f32>>>> {
+    fn forces<'py>(slf: Bound<'py, Self>) -> PyResult<Option<Py<PyAny>>> {
         let py = slf.py();
-        let molecule = slf.borrow();
-        if let Some(inner) = molecule.as_owned() {
-            return inner
-                .forces
-                .as_ref()
-                .map(|forces| {
-                    let n_atoms = forces.len();
-                    let flat: Vec<f32> = forces.iter().flat_map(|f| [f[0], f[1], f[2]]).collect();
-                    pyarray2_from_flat(py, flat, n_atoms, 3)
-                })
-                .transpose();
-        }
-        let Some(view) = molecule.as_view() else {
-            return Ok(None);
-        };
-        let Some(slot) = view.forces else {
-            return Ok(None);
-        };
-        if slot.2 != TYPE_VEC3_F32 || slot.1 != view.n_atoms * 12 {
-            return Err(PyValueError::new_err("Invalid forces section"));
-        }
-        let payload = view.builtin_payload(slot);
-        let data = cast_or_decode_f32(payload)?;
-        Ok(Some(pyarray2_from_cow(py, data, view.n_atoms, 3)?))
+        slf.borrow().forces_py(py)
     }
 
     /// forces property (setter)
     #[setter]
-    fn set_forces(&mut self, forces: &Bound<'_, PyArray2<f32>>) -> PyResult<()> {
-        let readonly = forces.readonly();
-        let arr = readonly.as_array();
-        let shape = arr.shape();
-
-        if shape[1] != 3 {
-            return Err(PyValueError::new_err("Forces must have shape (n_atoms, 3)"));
-        }
-
-        let forces_vec: Vec<[f32; 3]> = arr
-            .outer_iter()
-            .map(|row| [row[0], row[1], row[2]])
-            .collect();
-
-        if forces_vec.len() != self.len() {
-            return Err(PyValueError::new_err(format!(
-                "Forces length ({}) doesn't match atom count ({})",
-                forces_vec.len(),
-                self.len()
-            )));
-        }
-
-        self.ensure_owned()?.forces = Some(forces_vec);
+    fn set_forces(&mut self, py: Python<'_>, forces: Py<PyAny>) -> PyResult<()> {
+        let n_atoms = self.len();
+        self.ensure_owned()?.forces = Some(parse_vec3_field(forces.bind(py), "forces", n_atoms)?);
         Ok(())
     }
 
@@ -359,7 +304,7 @@ impl PyMolecule {
     #[getter]
     fn energy(&self) -> PyResult<Option<f64>> {
         if let Some(inner) = self.as_owned() {
-            Ok(inner.energy)
+            Ok(inner.energy.as_ref().map(FloatScalarData::as_f64))
         } else if let Some(view) = self.as_view() {
             view.energy()
         } else {
@@ -370,242 +315,76 @@ impl PyMolecule {
     /// Set energy
     #[setter]
     fn set_energy(&mut self, energy: Option<f64>) -> PyResult<()> {
-        self.ensure_owned()?.energy = energy;
+        self.ensure_owned()?.energy = energy.map(FloatScalarData::F64);
         Ok(())
     }
 
     /// charges property (getter)
     #[getter]
-    fn charges<'py>(slf: Bound<'py, Self>) -> PyResult<Option<Bound<'py, PyArray1<f64>>>> {
+    fn charges<'py>(slf: Bound<'py, Self>) -> PyResult<Option<Py<PyAny>>> {
         let py = slf.py();
-        let molecule = slf.borrow();
-        if let Some(inner) = molecule.as_owned() {
-            return Ok(inner
-                .charges
-                .as_ref()
-                .map(|charges| PyArray1::from_slice(py, charges)));
-        }
-        let Some(view) = molecule.as_view() else {
-            return Ok(None);
-        };
-        let Some(slot) = view.charges else {
-            return Ok(None);
-        };
-        if slot.2 != TYPE_F64_ARRAY || slot.1 != view.n_atoms * 8 {
-            return Err(PyValueError::new_err("Invalid charges section"));
-        }
-        let payload = view.builtin_payload(slot);
-        let data = cast_or_decode_f64(payload)?;
-        Ok(Some(pyarray1_from_cow(py, data)))
+        slf.borrow().charges_py(py)
     }
 
     /// charges property (setter)
     #[setter]
-    fn set_charges(&mut self, charges: &Bound<'_, PyArray1<f64>>) -> PyResult<()> {
-        let charges_vec: Vec<f64> = charges.readonly().as_array().to_vec();
-
-        if charges_vec.len() != self.len() {
-            return Err(PyValueError::new_err(format!(
-                "Charges length ({}) doesn't match atom count ({})",
-                charges_vec.len(),
-                self.len()
-            )));
-        }
-
-        self.ensure_owned()?.charges = Some(charges_vec);
+    fn set_charges(&mut self, py: Python<'_>, charges: Py<PyAny>) -> PyResult<()> {
+        let n_atoms = self.len();
+        self.ensure_owned()?.charges = Some(parse_float_array_field(
+            charges.bind(py),
+            "charges",
+            n_atoms,
+        )?);
         Ok(())
     }
 
     /// velocities property (getter)
     #[getter]
-    fn velocities<'py>(slf: Bound<'py, Self>) -> PyResult<Option<Bound<'py, PyArray2<f32>>>> {
+    fn velocities<'py>(slf: Bound<'py, Self>) -> PyResult<Option<Py<PyAny>>> {
         let py = slf.py();
-        let molecule = slf.borrow();
-        if let Some(inner) = molecule.as_owned() {
-            return inner
-                .velocities
-                .as_ref()
-                .map(|vels| {
-                    let n_atoms = vels.len();
-                    let flat: Vec<f32> = vels.iter().flat_map(|v| [v[0], v[1], v[2]]).collect();
-                    pyarray2_from_flat(py, flat, n_atoms, 3)
-                })
-                .transpose();
-        }
-        let Some(view) = molecule.as_view() else {
-            return Ok(None);
-        };
-        let Some(slot) = view.velocities else {
-            return Ok(None);
-        };
-        if slot.2 != TYPE_VEC3_F32 || slot.1 != view.n_atoms * 12 {
-            return Err(PyValueError::new_err("Invalid velocities section"));
-        }
-        let payload = view.builtin_payload(slot);
-        let data = cast_or_decode_f32(payload)?;
-        Ok(Some(pyarray2_from_cow(py, data, view.n_atoms, 3)?))
+        slf.borrow().velocities_py(py)
     }
 
     /// velocities property (setter)
     #[setter]
-    fn set_velocities(&mut self, velocities: &Bound<'_, PyArray2<f32>>) -> PyResult<()> {
-        let readonly = velocities.readonly();
-        let arr = readonly.as_array();
-        let shape = arr.shape();
-
-        if shape[1] != 3 {
-            return Err(PyValueError::new_err(
-                "Velocities must have shape (n_atoms, 3)",
-            ));
-        }
-
-        let vel_vec: Vec<[f32; 3]> = arr
-            .outer_iter()
-            .map(|row| [row[0], row[1], row[2]])
-            .collect();
-
-        if vel_vec.len() != self.len() {
-            return Err(PyValueError::new_err(format!(
-                "Velocities length ({}) doesn't match atom count ({})",
-                vel_vec.len(),
-                self.len()
-            )));
-        }
-
-        self.ensure_owned()?.velocities = Some(vel_vec);
+    fn set_velocities(&mut self, py: Python<'_>, velocities: Py<PyAny>) -> PyResult<()> {
+        let n_atoms = self.len();
+        self.ensure_owned()?.velocities = Some(parse_vec3_field(
+            velocities.bind(py),
+            "velocities",
+            n_atoms,
+        )?);
         Ok(())
     }
 
     /// cell property (getter)
     #[getter]
-    fn cell<'py>(slf: Bound<'py, Self>) -> PyResult<Option<Bound<'py, PyArray2<f64>>>> {
+    fn cell<'py>(slf: Bound<'py, Self>) -> PyResult<Option<Py<PyAny>>> {
         let py = slf.py();
-        let molecule = slf.borrow();
-        if let Some(inner) = molecule.as_owned() {
-            return inner
-                .cell
-                .as_ref()
-                .map(|cell| {
-                    let flat: Vec<f64> = cell
-                        .iter()
-                        .flat_map(|row| [row[0], row[1], row[2]])
-                        .collect();
-                    pyarray2_from_flat(py, flat, 3, 3)
-                })
-                .transpose();
-        }
-        let Some(view) = molecule.as_view() else {
-            return Ok(None);
-        };
-        let Some(slot) = view.cell else {
-            return Ok(None);
-        };
-        if slot.2 != TYPE_MAT3X3_F64 || slot.1 != 72 {
-            return Err(PyValueError::new_err("Invalid cell section"));
-        }
-        let payload = view.builtin_payload(slot);
-        let data = cast_or_decode_f64(payload)?;
-        Ok(Some(pyarray2_from_cow(py, data, 3, 3)?))
+        slf.borrow().cell_py(py)
     }
 
     /// cell property (setter)
     #[setter]
-    fn set_cell(&mut self, cell: &Bound<'_, PyArray2<f64>>) -> PyResult<()> {
-        let readonly = cell.readonly();
-        let arr = readonly.as_array();
-        let shape = arr.shape();
-
-        if shape != [3, 3] {
-            return Err(PyValueError::new_err("Cell must have shape (3, 3)"));
-        }
-
-        let cell_array: [[f64; 3]; 3] = [
-            [arr[[0, 0]], arr[[0, 1]], arr[[0, 2]]],
-            [arr[[1, 0]], arr[[1, 1]], arr[[1, 2]]],
-            [arr[[2, 0]], arr[[2, 1]], arr[[2, 2]]],
-        ];
-
-        self.ensure_owned()?.cell = Some(cell_array);
+    fn set_cell(&mut self, py: Python<'_>, cell: Py<PyAny>) -> PyResult<()> {
+        self.ensure_owned()?.cell = Some(parse_mat3_field(cell.bind(py), "cell")?);
         Ok(())
     }
 
     /// stress property (getter)
     #[getter]
-    fn stress<'py>(slf: Bound<'py, Self>) -> PyResult<Option<Bound<'py, PyArray2<f64>>>> {
+    fn stress<'py>(slf: Bound<'py, Self>) -> PyResult<Option<Py<PyAny>>> {
         let py = slf.py();
-        let molecule = slf.borrow();
-        if let Some(inner) = molecule.as_owned() {
-            return inner
-                .stress
-                .as_ref()
-                .map(|stress| {
-                    let flat: Vec<f64> = stress
-                        .iter()
-                        .flat_map(|row| [row[0], row[1], row[2]])
-                        .collect();
-                    pyarray2_from_flat(py, flat, 3, 3)
-                })
-                .transpose();
-        }
-        let Some(view) = molecule.as_view() else {
-            return Ok(None);
-        };
-        let Some(slot) = view.stress else {
-            return Ok(None);
-        };
-        if slot.2 != TYPE_MAT3X3_F64 || slot.1 != 72 {
-            return Err(PyValueError::new_err("Invalid stress section"));
-        }
-        let payload = view.builtin_payload(slot);
-        let data = cast_or_decode_f64(payload)?;
-        Ok(Some(pyarray2_from_cow(py, data, 3, 3)?))
+        slf.borrow().stress_py(py)
     }
 
     /// stress property (setter)
     #[setter]
     fn set_stress(&mut self, py: Python<'_>, stress: Py<PyAny>) -> PyResult<()> {
-        let stress = stress.bind(py);
-        if let Ok(arr) = stress.cast::<PyArray2<f64>>() {
-            let readonly = arr.readonly();
-            let arr = readonly.as_array();
-            let shape = arr.shape();
-
-            if shape != [3, 3] {
-                return Err(PyValueError::new_err("Stress must have shape (3, 3)"));
-            }
-
-            let inner = self.ensure_owned()?;
-            inner.stress = Some([
-                [arr[[0, 0]], arr[[0, 1]], arr[[0, 2]]],
-                [arr[[1, 0]], arr[[1, 1]], arr[[1, 2]]],
-                [arr[[2, 0]], arr[[2, 1]], arr[[2, 2]]],
-            ]);
-            inner.properties.remove("stress");
-            return Ok(());
-        }
-
-        if let Ok(arr) = stress.cast::<PyArray2<f32>>() {
-            let readonly = arr.readonly();
-            let arr = readonly.as_array();
-            let shape = arr.shape();
-
-            if shape != [3, 3] {
-                return Err(PyValueError::new_err("Stress must have shape (3, 3)"));
-            }
-
-            let inner = self.ensure_owned()?;
-            inner.stress = Some([
-                [arr[[0, 0]] as f64, arr[[0, 1]] as f64, arr[[0, 2]] as f64],
-                [arr[[1, 0]] as f64, arr[[1, 1]] as f64, arr[[1, 2]] as f64],
-                [arr[[2, 0]] as f64, arr[[2, 1]] as f64, arr[[2, 2]] as f64],
-            ]);
-            inner.properties.remove("stress");
-            return Ok(());
-        }
-
-        Err(PyValueError::new_err(
-            "Stress must be a float32 or float64 ndarray with shape (3, 3)",
-        ))
+        let inner = self.ensure_owned()?;
+        inner.stress = Some(parse_mat3_field(stress.bind(py), "stress")?);
+        inner.properties.remove("stress");
+        Ok(())
     }
 
     /// pbc property (getter)
@@ -629,19 +408,9 @@ impl PyMolecule {
 
     /// positions property (read-only)
     #[getter]
-    fn positions<'py>(slf: Bound<'py, Self>) -> PyResult<Bound<'py, PyArray2<f32>>> {
+    fn positions<'py>(slf: Bound<'py, Self>) -> PyResult<Py<PyAny>> {
         let py = slf.py();
-        let molecule = slf.borrow();
-        if let Some(inner) = molecule.as_owned() {
-            let flat = inner.positions_flat();
-            let n_atoms = inner.len();
-            return pyarray2_from_flat(py, flat, n_atoms, 3);
-        }
-        let view = molecule.as_view().ok_or_else(|| {
-            PyValueError::new_err("Molecule is missing both owned and view state")
-        })?;
-        let pos_f32 = cast_or_decode_f32(view.positions_bytes())?;
-        pyarray2_from_cow(py, pos_f32, view.n_atoms, 3)
+        slf.borrow().positions_py(py)
     }
 
     /// atomic_numbers property (read-only)

@@ -4,7 +4,9 @@
 //! Run with:
 //!   cargo run -p atompack --release --bin atompack-bench -- --help
 
-use atompack::{Atom, AtomDatabase, Molecule, compression::CompressionType};
+use atompack::{
+    Atom, AtomDatabase, FloatScalarData, Molecule, Vec3Data, compression::CompressionType,
+};
 use std::env;
 use std::time::{Duration, Instant};
 
@@ -101,15 +103,15 @@ fn create_synthetic_molecule(atoms_per_molecule: usize, id: u64, with_props: boo
 
     if with_props {
         let n = atoms_per_molecule;
-        mol.energy = Some(-1000.0 - (id as f64) * 1e-3);
-        mol.forces = Some(
+        mol.energy = Some(FloatScalarData::F64(-1000.0 - (id as f64) * 1e-3));
+        mol.forces = Some(Vec3Data::F32(
             (0..n)
                 .map(|i| {
                     let t = (id as f32) * 0.002 + (i as f32) * 0.02;
                     [(t * 0.7).sin(), (t * 0.9).cos(), (t * 1.1).sin()]
                 })
                 .collect(),
-        );
+        ));
     }
 
     mol

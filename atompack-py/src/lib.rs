@@ -8,8 +8,8 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 use atompack::{
-    Atom, AtomDatabase, Molecule, SharedMmapBytes, atom::PropertyValue,
-    compression::CompressionType,
+    Atom, AtomDatabase, FloatArrayData, FloatScalarData, Mat3Data, Molecule, SharedMmapBytes,
+    Vec3Data, atom::PropertyValue, compression::CompressionType,
 };
 use numpy::{Element, PyArray1, PyArray2, PyArray3, PyArrayMethods};
 use pyo3::exceptions::{PyFileExistsError, PyIndexError, PyKeyError, PyTypeError, PyValueError};
@@ -111,6 +111,11 @@ const TYPE_VEC3_F64: u8 = 7;
 const TYPE_I32_ARRAY: u8 = 8;
 const TYPE_BOOL3: u8 = 9;
 const TYPE_MAT3X3_F64: u8 = 10;
+const TYPE_FLOAT32: u8 = 11;
+const TYPE_MAT3X3_F32: u8 = 12;
+
+const RECORD_FORMAT_SOA_V2: u32 = 2;
+const RECORD_FORMAT_SOA_V3: u32 = 3;
 
 /// A single parsed section reference (zero-copy into decompressed bytes).
 #[derive(Clone)]
@@ -124,7 +129,8 @@ struct SectionRef<'a> {
 /// Per-molecule extracted data (references into decompressed bytes).
 struct MolData<'a> {
     n_atoms: usize,
-    positions_bytes: &'a [u8],      // n_atoms * 12
+    positions_type: u8,
+    positions_bytes: &'a [u8],
     atomic_numbers_bytes: &'a [u8], // n_atoms
     sections: Vec<SectionRef<'a>>,
 }
@@ -145,11 +151,31 @@ struct SectionSchema {
 ///   [n_atoms:u32][positions:n*12][atomic_numbers:n]
 ///   [n_sections:u16]
 ///   per section: [kind:u8][key_len:u8][key][type_tag:u8][payload_len:u32][payload]
-fn parse_mol_fast_soa(bytes: &[u8]) -> atompack::Result<MolData<'_>> {
+fn parse_mol_fast_soa(bytes: &[u8], record_format: u32) -> atompack::Result<MolData<'_>> {
     let mut pos = 0usize;
     let n_atoms = read_u32_le_at(bytes, &mut pos, "SOA n_atoms")? as usize;
+    let positions_type = match record_format {
+        RECORD_FORMAT_SOA_V2 => TYPE_VEC3_F32,
+        RECORD_FORMAT_SOA_V3 => read_u8_at(bytes, &mut pos, "SOA positions type")?,
+        _ => {
+            return Err(invalid_data(format!(
+                "Unsupported record format {}",
+                record_format
+            )));
+        }
+    };
+    let positions_stride = match positions_type {
+        TYPE_VEC3_F32 => 12usize,
+        TYPE_VEC3_F64 => 24usize,
+        _ => {
+            return Err(invalid_data(format!(
+                "Unsupported positions type tag {}",
+                positions_type
+            )));
+        }
+    };
     let positions_len = n_atoms
-        .checked_mul(12)
+        .checked_mul(positions_stride)
         .ok_or_else(|| invalid_data("SOA positions byte length overflow"))?;
     let positions_bytes = read_bytes_at(bytes, &mut pos, positions_len, "SOA positions")?;
     let atomic_numbers_bytes = read_bytes_at(bytes, &mut pos, n_atoms, "SOA atomic_numbers")?;
@@ -175,6 +201,7 @@ fn parse_mol_fast_soa(bytes: &[u8]) -> atompack::Result<MolData<'_>> {
 
     Ok(MolData {
         n_atoms,
+        positions_type,
         positions_bytes,
         atomic_numbers_bytes,
         sections,
@@ -199,7 +226,9 @@ fn section_schema_from_ref(
             elem_bytes
         }
         TYPE_FLOAT | TYPE_INT => 8,
+        TYPE_FLOAT32 => 4,
         TYPE_BOOL3 => 3,
+        TYPE_MAT3X3_F32 => 36,
         TYPE_MAT3X3_F64 => 72,
         _ => section.payload.len(),
     };
@@ -241,7 +270,7 @@ fn validate_section_payload(
                 )));
             }
         }
-        TYPE_FLOAT | TYPE_INT | TYPE_BOOL3 | TYPE_MAT3X3_F64 => {
+        TYPE_FLOAT | TYPE_INT | TYPE_FLOAT32 | TYPE_BOOL3 | TYPE_MAT3X3_F32 | TYPE_MAT3X3_F64 => {
             if section.payload.len() != slot_bytes {
                 return Err(invalid_data(format!(
                     "Section '{}' has invalid payload length {} (expected {})",
@@ -299,6 +328,8 @@ fn type_tag_elem_bytes(tag: u8) -> usize {
         TYPE_VEC3_F64 => 24,
         TYPE_I32_ARRAY => 4,
         TYPE_BOOL3 => 3,
+        TYPE_FLOAT32 => 4,
+        TYPE_MAT3X3_F32 => 36,
         TYPE_MAT3X3_F64 => 72,
         _ => 0,
     }
@@ -354,8 +385,11 @@ impl std::ops::Deref for SoaBytes {
 
 struct SoaMoleculeView {
     bytes: SoaBytes,
+    record_format: u32,
     n_atoms: usize,
+    positions_type: u8,
     positions_start: usize,
+    positions_len: usize,
     atomic_numbers_start: usize,
     // Known builtins — zero-alloc, set during from_bytes
     forces: Option<BuiltinSlot>,
@@ -372,17 +406,46 @@ struct SoaMoleculeView {
 
 impl SoaMoleculeView {
     /// Pure-Rust parser — no Python dependency, safe to call from rayon threads.
-    fn from_storage_inner(bytes: SoaBytes) -> atompack::Result<Self> {
+    fn from_storage_inner(bytes: SoaBytes, record_format: u32) -> atompack::Result<Self> {
         if bytes.len() < 6 {
             return Err(invalid_data("SOA record too small"));
         }
 
         let n_atoms = u32::from_le_bytes(slice_to_array(&bytes[0..4], "SOA atom count")?) as usize;
         let mut pos = 4usize;
+        let positions_type = match record_format {
+            RECORD_FORMAT_SOA_V2 => TYPE_VEC3_F32,
+            RECORD_FORMAT_SOA_V3 => {
+                if pos + 1 > bytes.len() {
+                    return Err(invalid_data("SOA record truncated at positions type"));
+                }
+                let tag = bytes[pos];
+                pos += 1;
+                tag
+            }
+            _ => {
+                return Err(invalid_data(format!(
+                    "Unsupported record format {}",
+                    record_format
+                )));
+            }
+        };
+        let positions_stride = match positions_type {
+            TYPE_VEC3_F32 => 12usize,
+            TYPE_VEC3_F64 => 24usize,
+            _ => {
+                return Err(invalid_data(format!(
+                    "Unsupported positions type tag {}",
+                    positions_type
+                )));
+            }
+        };
         let positions_start = pos;
-        pos = n_atoms
-            .checked_mul(12)
-            .and_then(|n| pos.checked_add(n))
+        let positions_len = n_atoms
+            .checked_mul(positions_stride)
+            .ok_or_else(|| invalid_data("SOA positions overflow"))?;
+        pos = pos
+            .checked_add(positions_len)
             .ok_or_else(|| invalid_data("SOA positions overflow"))?;
         if pos > bytes.len() {
             return Err(invalid_data("SOA record truncated at positions"));
@@ -478,8 +541,11 @@ impl SoaMoleculeView {
 
         Ok(Self {
             bytes,
+            record_format,
             n_atoms,
+            positions_type,
             positions_start,
+            positions_len,
             atomic_numbers_start,
             forces,
             energy,
@@ -493,21 +559,25 @@ impl SoaMoleculeView {
         })
     }
 
-    fn from_bytes_inner(bytes: Vec<u8>) -> atompack::Result<Self> {
-        Self::from_storage_inner(SoaBytes::Owned(bytes))
+    fn from_bytes_inner(bytes: Vec<u8>, record_format: u32) -> atompack::Result<Self> {
+        Self::from_storage_inner(SoaBytes::Owned(bytes), record_format)
     }
 
-    fn from_shared_bytes_inner(bytes: SharedMmapBytes) -> atompack::Result<Self> {
-        Self::from_storage_inner(SoaBytes::Shared(bytes))
+    fn from_shared_bytes_inner(
+        bytes: SharedMmapBytes,
+        record_format: u32,
+    ) -> atompack::Result<Self> {
+        Self::from_storage_inner(SoaBytes::Shared(bytes), record_format)
     }
 
     /// Thin wrapper for call sites that need PyResult.
-    fn from_bytes(bytes: Vec<u8>) -> PyResult<Self> {
-        Self::from_bytes_inner(bytes).map_err(|e| PyValueError::new_err(format!("{}", e)))
+    fn from_bytes(bytes: Vec<u8>, record_format: u32) -> PyResult<Self> {
+        Self::from_bytes_inner(bytes, record_format)
+            .map_err(|e| PyValueError::new_err(format!("{}", e)))
     }
 
     fn positions_bytes(&self) -> &[u8] {
-        &self.bytes[self.positions_start..self.positions_start + self.n_atoms * 12]
+        &self.bytes[self.positions_start..self.positions_start + self.positions_len]
     }
 
     fn atomic_numbers_bytes(&self) -> &[u8] {
@@ -549,18 +619,45 @@ impl SoaMoleculeView {
         if index >= self.n_atoms {
             return Ok(None);
         }
-        let pos = &self.positions_bytes()[index * 12..(index + 1) * 12];
-        Ok(Some(Atom::new(
-            f32::from_le_bytes(py_slice_to_array(&pos[0..4], "atom x")?),
-            f32::from_le_bytes(py_slice_to_array(&pos[4..8], "atom y")?),
-            f32::from_le_bytes(py_slice_to_array(&pos[8..12], "atom z")?),
-            self.atomic_numbers_bytes()[index],
-        )))
+        let atomic_number = self.atomic_numbers_bytes()[index];
+        Ok(Some(match self.positions_type {
+            TYPE_VEC3_F32 => {
+                let pos = &self.positions_bytes()[index * 12..(index + 1) * 12];
+                Atom::new(
+                    f32::from_le_bytes(py_slice_to_array(&pos[0..4], "atom x")?),
+                    f32::from_le_bytes(py_slice_to_array(&pos[4..8], "atom y")?),
+                    f32::from_le_bytes(py_slice_to_array(&pos[8..12], "atom z")?),
+                    atomic_number,
+                )
+            }
+            TYPE_VEC3_F64 => {
+                let pos = &self.positions_bytes()[index * 24..(index + 1) * 24];
+                Atom::new(
+                    f64::from_le_bytes(py_slice_to_array(&pos[0..8], "atom x")?) as f32,
+                    f64::from_le_bytes(py_slice_to_array(&pos[8..16], "atom y")?) as f32,
+                    f64::from_le_bytes(py_slice_to_array(&pos[16..24], "atom z")?) as f32,
+                    atomic_number,
+                )
+            }
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "Unsupported positions type tag {}",
+                    other
+                )));
+            }
+        }))
     }
 
     fn energy(&self) -> PyResult<Option<f64>> {
         match self.energy {
-            Some(slot) => Ok(Some(read_f64_scalar(self.builtin_payload(slot))?)),
+            Some(slot) => match slot.2 {
+                TYPE_FLOAT => Ok(Some(read_f64_scalar(self.builtin_payload(slot))?)),
+                TYPE_FLOAT32 => Ok(Some(read_f32_scalar(self.builtin_payload(slot))? as f64)),
+                other => Err(PyValueError::new_err(format!(
+                    "Unsupported energy type tag {}",
+                    other
+                ))),
+            },
             None => Ok(None),
         }
     }
@@ -579,32 +676,94 @@ impl SoaMoleculeView {
     }
 
     fn materialize(&self) -> PyResult<Molecule> {
-        let positions: Vec<[f32; 3]> = (0..self.n_atoms)
-            .map(|i| {
-                let pos = &self.positions_bytes()[i * 12..(i + 1) * 12];
-                Ok([
-                    f32::from_le_bytes(py_slice_to_array(&pos[0..4], "position x")?),
-                    f32::from_le_bytes(py_slice_to_array(&pos[4..8], "position y")?),
-                    f32::from_le_bytes(py_slice_to_array(&pos[8..12], "position z")?),
-                ])
-            })
-            .collect::<PyResult<_>>()?;
         let atomic_numbers = self.atomic_numbers_bytes().to_vec();
-        let mut molecule =
-            Molecule::new(positions, atomic_numbers).map_err(PyValueError::new_err)?;
+        let mut molecule = match self.positions_type {
+            TYPE_VEC3_F32 => {
+                let positions: Vec<[f32; 3]> = (0..self.n_atoms)
+                    .map(|i| {
+                        let pos = &self.positions_bytes()[i * 12..(i + 1) * 12];
+                        Ok([
+                            f32::from_le_bytes(py_slice_to_array(&pos[0..4], "position x")?),
+                            f32::from_le_bytes(py_slice_to_array(&pos[4..8], "position y")?),
+                            f32::from_le_bytes(py_slice_to_array(&pos[8..12], "position z")?),
+                        ])
+                    })
+                    .collect::<PyResult<_>>()?;
+                Molecule::new(positions, atomic_numbers).map_err(PyValueError::new_err)?
+            }
+            TYPE_VEC3_F64 => {
+                let positions: Vec<[f64; 3]> = (0..self.n_atoms)
+                    .map(|i| {
+                        let pos = &self.positions_bytes()[i * 24..(i + 1) * 24];
+                        Ok([
+                            f64::from_le_bytes(py_slice_to_array(&pos[0..8], "position x")?),
+                            f64::from_le_bytes(py_slice_to_array(&pos[8..16], "position y")?),
+                            f64::from_le_bytes(py_slice_to_array(&pos[16..24], "position z")?),
+                        ])
+                    })
+                    .collect::<PyResult<_>>()?;
+                Molecule::new_f64(positions, atomic_numbers).map_err(PyValueError::new_err)?
+            }
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "Unsupported positions type tag {}",
+                    other
+                )));
+            }
+        };
 
         // Builtins
         if let Some(slot) = self.charges {
-            molecule.charges = Some(decode_f64_array(self.builtin_payload(slot))?);
+            molecule.charges = Some(match slot.2 {
+                TYPE_F32_ARRAY => {
+                    FloatArrayData::F32(decode_f32_array(self.builtin_payload(slot))?)
+                }
+                TYPE_F64_ARRAY => {
+                    FloatArrayData::F64(decode_f64_array(self.builtin_payload(slot))?)
+                }
+                other => {
+                    return Err(PyValueError::new_err(format!(
+                        "Unsupported charges type tag {}",
+                        other
+                    )));
+                }
+            });
         }
         if let Some(slot) = self.cell {
-            molecule.cell = Some(decode_mat3x3_f64(self.builtin_payload(slot))?);
+            molecule.cell = Some(match slot.2 {
+                TYPE_MAT3X3_F32 => Mat3Data::F32(decode_mat3x3_f32(self.builtin_payload(slot))?),
+                TYPE_MAT3X3_F64 => Mat3Data::F64(decode_mat3x3_f64(self.builtin_payload(slot))?),
+                other => {
+                    return Err(PyValueError::new_err(format!(
+                        "Unsupported cell type tag {}",
+                        other
+                    )));
+                }
+            });
         }
         if let Some(slot) = self.energy {
-            molecule.energy = Some(read_f64_scalar(self.builtin_payload(slot))?);
+            molecule.energy = Some(match slot.2 {
+                TYPE_FLOAT => FloatScalarData::F64(read_f64_scalar(self.builtin_payload(slot))?),
+                TYPE_FLOAT32 => FloatScalarData::F32(read_f32_scalar(self.builtin_payload(slot))?),
+                other => {
+                    return Err(PyValueError::new_err(format!(
+                        "Unsupported energy type tag {}",
+                        other
+                    )));
+                }
+            });
         }
         if let Some(slot) = self.forces {
-            molecule.forces = Some(decode_vec3_f32(self.builtin_payload(slot))?);
+            molecule.forces = Some(match slot.2 {
+                TYPE_VEC3_F32 => Vec3Data::F32(decode_vec3_f32(self.builtin_payload(slot))?),
+                TYPE_VEC3_F64 => Vec3Data::F64(decode_vec3_f64(self.builtin_payload(slot))?),
+                other => {
+                    return Err(PyValueError::new_err(format!(
+                        "Unsupported forces type tag {}",
+                        other
+                    )));
+                }
+            });
         }
         if let Some(slot) = self.name {
             let payload = self.builtin_payload(slot);
@@ -622,10 +781,28 @@ impl SoaMoleculeView {
             molecule.pbc = Some([payload[0] != 0, payload[1] != 0, payload[2] != 0]);
         }
         if let Some(slot) = self.stress {
-            molecule.stress = Some(decode_mat3x3_f64(self.builtin_payload(slot))?);
+            molecule.stress = Some(match slot.2 {
+                TYPE_MAT3X3_F32 => Mat3Data::F32(decode_mat3x3_f32(self.builtin_payload(slot))?),
+                TYPE_MAT3X3_F64 => Mat3Data::F64(decode_mat3x3_f64(self.builtin_payload(slot))?),
+                other => {
+                    return Err(PyValueError::new_err(format!(
+                        "Unsupported stress type tag {}",
+                        other
+                    )));
+                }
+            });
         }
         if let Some(slot) = self.velocities {
-            molecule.velocities = Some(decode_vec3_f32(self.builtin_payload(slot))?);
+            molecule.velocities = Some(match slot.2 {
+                TYPE_VEC3_F32 => Vec3Data::F32(decode_vec3_f32(self.builtin_payload(slot))?),
+                TYPE_VEC3_F64 => Vec3Data::F64(decode_vec3_f64(self.builtin_payload(slot))?),
+                other => {
+                    return Err(PyValueError::new_err(format!(
+                        "Unsupported velocities type tag {}",
+                        other
+                    )));
+                }
+            });
         }
 
         // Custom properties (lazy — key parsed here only)
@@ -658,6 +835,16 @@ fn read_f64_scalar(payload: &[u8]) -> PyResult<f64> {
     Ok(f64::from_le_bytes(py_slice_to_array(
         payload,
         "f64 payload",
+    )?))
+}
+
+fn read_f32_scalar(payload: &[u8]) -> PyResult<f32> {
+    if payload.len() != 4 {
+        return Err(PyValueError::new_err("Invalid f32 payload length"));
+    }
+    Ok(f32::from_le_bytes(py_slice_to_array(
+        payload,
+        "f32 payload",
     )?))
 }
 
@@ -782,6 +969,29 @@ fn decode_mat3x3_f64(payload: &[u8]) -> PyResult<[[f64; 3]; 3]> {
             f64::from_le_bytes(py_slice_to_array(&payload[48..56], "mat3x3<f64> [2][0]")?),
             f64::from_le_bytes(py_slice_to_array(&payload[56..64], "mat3x3<f64> [2][1]")?),
             f64::from_le_bytes(py_slice_to_array(&payload[64..72], "mat3x3<f64> [2][2]")?),
+        ],
+    ])
+}
+
+fn decode_mat3x3_f32(payload: &[u8]) -> PyResult<[[f32; 3]; 3]> {
+    if payload.len() != 36 {
+        return Err(PyValueError::new_err("Invalid mat3x3<f32> payload length"));
+    }
+    Ok([
+        [
+            f32::from_le_bytes(py_slice_to_array(&payload[0..4], "mat3x3<f32> [0][0]")?),
+            f32::from_le_bytes(py_slice_to_array(&payload[4..8], "mat3x3<f32> [0][1]")?),
+            f32::from_le_bytes(py_slice_to_array(&payload[8..12], "mat3x3<f32> [0][2]")?),
+        ],
+        [
+            f32::from_le_bytes(py_slice_to_array(&payload[12..16], "mat3x3<f32> [1][0]")?),
+            f32::from_le_bytes(py_slice_to_array(&payload[16..20], "mat3x3<f32> [1][1]")?),
+            f32::from_le_bytes(py_slice_to_array(&payload[20..24], "mat3x3<f32> [1][2]")?),
+        ],
+        [
+            f32::from_le_bytes(py_slice_to_array(&payload[24..28], "mat3x3<f32> [2][0]")?),
+            f32::from_le_bytes(py_slice_to_array(&payload[28..32], "mat3x3<f32> [2][1]")?),
+            f32::from_le_bytes(py_slice_to_array(&payload[32..36], "mat3x3<f32> [2][2]")?),
         ],
     ])
 }

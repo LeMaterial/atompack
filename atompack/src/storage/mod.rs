@@ -39,7 +39,10 @@ mod soa;
 
 use self::header::{Header, encode_header_slot, read_best_header};
 use self::index::{IndexStorage, MoleculeIndex, decode_index, encode_index};
-use self::soa::{arr, deserialize_molecule_soa, serialize_molecule_soa};
+use self::soa::{
+    SchemaLock, arr, deserialize_molecule_soa, merge_schema_lock, record_schema,
+    serialize_molecule_soa,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -48,7 +51,9 @@ use self::soa::{arr, deserialize_molecule_soa, serialize_molecule_soa};
 const MAGIC: &[u8; 4] = b"ATPK";
 /// Bump only for incompatible layout changes (not crate version).
 const FILE_FORMAT_VERSION: u32 = 2;
-const RECORD_FORMAT_SOA: u32 = 2;
+const RECORD_FORMAT_SOA_V2: u32 = 2;
+const RECORD_FORMAT_SOA_V3: u32 = 3;
+const RECORD_FORMAT_SOA: u32 = RECORD_FORMAT_SOA_V3;
 
 // Section kind tags (inside each SOA record)
 const KIND_BUILTIN: u8 = 0;
@@ -67,6 +72,8 @@ const TYPE_VEC3_F64: u8 = 7; // Vec<[f64; 3]>
 const TYPE_I32_ARRAY: u8 = 8;
 const TYPE_BOOL3: u8 = 9; // [bool; 3]
 const TYPE_MAT3X3_F64: u8 = 10; // [[f64; 3]; 3]
+const TYPE_FLOAT32: u8 = 11; // f32 scalar
+const TYPE_MAT3X3_F32: u8 = 12; // [[f32; 3]; 3]
 
 // Two redundant page-aligned header slots for crash safety.
 const HEADER_SLOT_SIZE: usize = 4096;
@@ -107,6 +114,7 @@ pub struct AtomDatabase {
     committed_end: u64,
     truncate_tail_on_next_write: bool,
     index: IndexStorage,
+    schema_lock: Option<SchemaLock>,
     file: Option<File>,
     data_mmap: Option<Arc<Mmap>>,
 }
@@ -151,6 +159,7 @@ impl AtomDatabase {
             committed_end: HEADER_REGION_SIZE,
             truncate_tail_on_next_write: false,
             index: IndexStorage::InMemory(Vec::new()),
+            schema_lock: None,
             file: None,
             data_mmap: None,
         })
@@ -199,9 +208,11 @@ impl AtomDatabase {
     fn open_v1(path: PathBuf, mut file: File, use_mmap: bool, populate: bool) -> Result<Self> {
         // Read the best valid header slot (crash-safe).
         let header = read_best_header(&mut file)?;
-        if header.record_format != RECORD_FORMAT_SOA {
+        if header.record_format != RECORD_FORMAT_SOA_V2
+            && header.record_format != RECORD_FORMAT_SOA_V3
+        {
             return Err(Error::InvalidData(format!(
-                "Unsupported legacy record format {}. Atompack no longer supports bincode databases.",
+                "Unsupported record format {}.",
                 header.record_format
             )));
         }
@@ -258,6 +269,7 @@ impl AtomDatabase {
             committed_end,
             truncate_tail_on_next_write,
             index,
+            schema_lock: None,
             file: Some(file),
             data_mmap,
         })
@@ -277,7 +289,70 @@ impl AtomDatabase {
         }
 
         self.truncate_tail_on_next_write = false;
+        self.schema_lock = None;
         self.file = None;
+        Ok(())
+    }
+
+    fn rebuild_schema_lock(&self) -> Result<SchemaLock> {
+        let mut lock = SchemaLock::default();
+        let compression = self.compression;
+
+        if let Some(ref mmap) = self.data_mmap {
+            for index in 0..self.index.len() {
+                let entry = self
+                    .index
+                    .get(index)
+                    .ok_or_else(|| Error::InvalidData(format!("Index {} out of bounds", index)))?;
+                let start = entry.offset as usize;
+                let end = start + entry.compressed_size as usize;
+                let bytes = decompress(
+                    &mmap[start..end],
+                    compression,
+                    Some(entry.uncompressed_size as usize),
+                )?;
+                let record = record_schema(&bytes, self.record_format)?;
+                merge_schema_lock(&mut lock, &record)?;
+            }
+            return Ok(lock);
+        }
+
+        let mut file = File::open(&self.path)?;
+        for index in 0..self.index.len() {
+            let entry = self
+                .index
+                .get(index)
+                .ok_or_else(|| Error::InvalidData(format!("Index {} out of bounds", index)))?;
+            file.seek(SeekFrom::Start(entry.offset))?;
+            let mut compressed = vec![0u8; entry.compressed_size as usize];
+            file.read_exact(&mut compressed)?;
+            let bytes = decompress(
+                &compressed,
+                compression,
+                Some(entry.uncompressed_size as usize),
+            )?;
+            let record = record_schema(&bytes, self.record_format)?;
+            merge_schema_lock(&mut lock, &record)?;
+        }
+        Ok(lock)
+    }
+
+    fn ensure_schema_compatible<'a, I>(&mut self, records: I) -> Result<()>
+    where
+        I: IntoIterator<Item = &'a [u8]>,
+    {
+        let mut lock = match &self.schema_lock {
+            Some(lock) => lock.clone(),
+            None if self.index.is_empty() => SchemaLock::default(),
+            None => self.rebuild_schema_lock()?,
+        };
+
+        for bytes in records {
+            let record = record_schema(bytes, self.record_format)?;
+            merge_schema_lock(&mut lock, &record)?;
+        }
+
+        self.schema_lock = Some(lock);
         Ok(())
     }
 
@@ -298,7 +373,7 @@ impl AtomDatabase {
         let serialized: Vec<(Vec<u8>, u32)> = molecules
             .par_iter()
             .map(|mol| {
-                let bytes = serialize_molecule_soa(mol)?;
+                let bytes = serialize_molecule_soa(mol, self.record_format)?;
                 let num_atoms = mol.len() as u32;
                 Ok((bytes, num_atoms))
             })
@@ -337,6 +412,7 @@ impl AtomDatabase {
         }
 
         self.truncate_uncommitted_tail_if_needed()?;
+        self.ensure_schema_compatible(records.iter().map(|(bytes, _)| *bytes))?;
 
         let compression = self.compression;
 
@@ -384,6 +460,7 @@ impl AtomDatabase {
         }
 
         self.truncate_uncommitted_tail_if_needed()?;
+        self.ensure_schema_compatible(records.iter().map(|(bytes, _)| bytes.as_slice()))?;
 
         let compression = self.compression;
 
@@ -446,14 +523,14 @@ impl AtomDatabase {
             self.compression,
             Some(mol_index.uncompressed_size as usize),
         )?;
-        deserialize_molecule_soa(&decompressed)
+        deserialize_molecule_soa(&decompressed, self.record_format)
     }
 
     /// Read multiple molecules in parallel.
     pub fn get_molecules(&self, indices: &[usize]) -> Result<Vec<Molecule>> {
         let raw = self.get_raw_bytes(indices)?;
         raw.into_par_iter()
-            .map(|bytes| deserialize_molecule_soa(&bytes))
+            .map(|bytes| deserialize_molecule_soa(&bytes, self.record_format))
             .collect()
     }
 
@@ -593,6 +670,10 @@ impl AtomDatabase {
         self.compression
     }
 
+    pub fn record_format(&self) -> u32 {
+        self.record_format
+    }
+
     /// Compressed bytes for a molecule from the mmap (None if no mmap).
     pub fn get_compressed_slice(&self, index: usize) -> Option<&[u8]> {
         let mol_index = self.index.get(index)?;
@@ -636,7 +717,7 @@ impl AtomDatabase {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Atom;
+    use crate::{Atom, FloatArrayData, FloatScalarData, Mat3Data, Vec3Data};
     use tempfile::NamedTempFile;
 
     fn molecule_from_atoms(atoms: Vec<Atom>) -> Molecule {
@@ -689,7 +770,7 @@ mod tests {
             let mut db = AtomDatabase::open(&path).unwrap();
             assert_eq!(db.len(), 1);
             let mol = db.get_molecule(0).unwrap();
-            assert_eq!(mol.positions[0], [1.0, 2.0, 3.0]);
+            assert_eq!(mol.atom(0).unwrap().position(), [1.0, 2.0, 3.0]);
         }
     }
 
@@ -703,8 +784,8 @@ mod tests {
             Atom::new(0.0, 0.0, 0.0, 6),
             Atom::new(1.0, 0.0, 0.0, 8),
         ]);
-        mol.forces = Some(vec![[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]);
-        mol.energy = Some(-123.456);
+        mol.forces = Some(Vec3Data::F32(vec![[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]));
+        mol.energy = Some(FloatScalarData::F64(-123.456));
 
         // Write to database
         {
@@ -721,13 +802,14 @@ mod tests {
             // Check forces are preserved
             assert!(retrieved.forces.is_some());
             let forces = retrieved.forces.unwrap();
-            assert_eq!(forces.len(), 2);
-            assert_eq!(forces[0], [0.1, 0.2, 0.3]);
-            assert_eq!(forces[1], [0.4, 0.5, 0.6]);
+            assert_eq!(
+                forces,
+                Vec3Data::F32(vec![[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]])
+            );
 
             // Check energy is preserved
             assert!(retrieved.energy.is_some());
-            assert_eq!(retrieved.energy.unwrap(), -123.456);
+            assert_eq!(retrieved.energy.unwrap(), FloatScalarData::F64(-123.456));
         }
     }
 
@@ -803,7 +885,7 @@ mod tests {
         // Opening + writing should truncate the uncommitted tail before appending new data.
         let mut db = AtomDatabase::open(&path).unwrap();
         let mol2 = molecule_from_atoms(vec![Atom::new(1.0, 2.0, 3.0, 8)]);
-        let mol2_bytes = serialize_molecule_soa(&mol2).unwrap();
+        let mol2_bytes = serialize_molecule_soa(&mol2, db.record_format()).unwrap();
         let mol2_compressed = compress(&mol2_bytes, compression).unwrap();
         db.add_molecule(&mol2).unwrap();
 
@@ -825,13 +907,21 @@ mod tests {
             Atom::new(4.0, 5.0, 6.0, 8),
         ]);
         mol.name = Some("water".to_string());
-        mol.energy = Some(-42.5);
-        mol.forces = Some(vec![[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]);
-        mol.charges = Some(vec![-0.5, 0.5]);
-        mol.velocities = Some(vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]);
-        mol.cell = Some([[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]]);
+        mol.energy = Some(FloatScalarData::F64(-42.5));
+        mol.forces = Some(Vec3Data::F32(vec![[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]));
+        mol.charges = Some(FloatArrayData::F64(vec![-0.5, 0.5]));
+        mol.velocities = Some(Vec3Data::F32(vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]));
+        mol.cell = Some(Mat3Data::F64([
+            [10.0, 0.0, 0.0],
+            [0.0, 10.0, 0.0],
+            [0.0, 0.0, 10.0],
+        ]));
         mol.pbc = Some([true, true, false]);
-        mol.stress = Some([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]]);
+        mol.stress = Some(Mat3Data::F64([
+            [1.0, 2.0, 3.0],
+            [4.0, 5.0, 6.0],
+            [7.0, 8.0, 9.0],
+        ]));
 
         // atom_properties
         mol.atom_properties.insert(
@@ -866,28 +956,31 @@ mod tests {
         // Verify all fields
         assert_eq!(r.name.as_deref(), Some("water"));
         assert_eq!(r.len(), 2);
-        assert_eq!(r.positions[0], [1.0, 2.0, 3.0]);
+        assert_eq!(r.atom(0).unwrap().position(), [1.0, 2.0, 3.0]);
         assert_eq!(r.atomic_numbers[0], 6);
-        assert_eq!(r.positions[1], [4.0, 5.0, 6.0]);
+        assert_eq!(r.atom(1).unwrap().position(), [4.0, 5.0, 6.0]);
         assert_eq!(r.atomic_numbers[1], 8);
-        assert_eq!(r.energy, Some(-42.5));
+        assert_eq!(r.energy, Some(FloatScalarData::F64(-42.5)));
         assert_eq!(
             r.forces.as_ref().unwrap(),
-            &[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
+            &Vec3Data::F32(vec![[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]])
         );
-        assert_eq!(r.charges.as_ref().unwrap(), &[-0.5, 0.5]);
+        assert_eq!(
+            r.charges.as_ref().unwrap(),
+            &FloatArrayData::F64(vec![-0.5, 0.5])
+        );
         assert_eq!(
             r.velocities.as_ref().unwrap(),
-            &[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+            &Vec3Data::F32(vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
         );
         assert_eq!(
             r.cell.unwrap(),
-            [[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]]
+            Mat3Data::F64([[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]])
         );
         assert_eq!(r.pbc, Some([true, true, false]));
         assert_eq!(
             r.stress.unwrap(),
-            [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]]
+            Mat3Data::F64([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]])
         );
 
         // atom_properties
@@ -930,7 +1023,7 @@ mod tests {
         let mut db = AtomDatabase::open(&path).unwrap();
         let r = db.get_molecule(0).unwrap();
         assert_eq!(r.len(), 1);
-        assert_eq!(r.positions[0], [1.0, 2.0, 3.0]);
+        assert_eq!(r.atom(0).unwrap().position(), [1.0, 2.0, 3.0]);
         assert_eq!(r.atomic_numbers[0], 6);
         assert!(r.name.is_none());
         assert!(r.energy.is_none());
@@ -1055,5 +1148,59 @@ mod tests {
             PropertyValue::String(v) => assert_eq!(v, "hello"),
             other => panic!("expected String, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_schema_lock_rejects_position_dtype_mismatch() {
+        let temp = NamedTempFile::new().unwrap();
+        let path = temp.path().to_path_buf();
+        let mut db = AtomDatabase::create(&path, CompressionType::None).unwrap();
+
+        let mol_f64 = Molecule::new_f64(vec![[0.0, 0.0, 0.0]], vec![6]).unwrap();
+        let mol_f32 = Molecule::new(vec![[1.0, 1.0, 1.0]], vec![8]).unwrap();
+
+        db.add_molecule(&mol_f64).unwrap();
+        let err = db.add_molecule(&mol_f32).unwrap_err();
+        assert!(format!("{}", err).contains("Position dtype mismatch"));
+    }
+
+    #[test]
+    fn test_schema_lock_rejects_custom_shape_mismatch() {
+        use crate::atom::PropertyValue;
+
+        let temp = NamedTempFile::new().unwrap();
+        let path = temp.path().to_path_buf();
+        let mut db = AtomDatabase::create(&path, CompressionType::None).unwrap();
+
+        let mut mol1 = Molecule::new(vec![[0.0, 0.0, 0.0]], vec![6]).unwrap();
+        mol1.set_property(
+            "spectrum".to_string(),
+            PropertyValue::FloatArray(vec![1.0, 2.0]),
+        );
+
+        let mut mol2 = Molecule::new(vec![[1.0, 1.0, 1.0]], vec![8]).unwrap();
+        mol2.set_property("spectrum".to_string(), PropertyValue::FloatArray(vec![3.0]));
+
+        db.add_molecule(&mol1).unwrap();
+        let err = db.add_molecule(&mol2).unwrap_err();
+        assert!(format!("{}", err).contains("Schema mismatch for section 'spectrum'"));
+    }
+
+    #[test]
+    fn test_schema_lock_allows_late_optional_builtin() {
+        let temp = NamedTempFile::new().unwrap();
+        let path = temp.path().to_path_buf();
+        let mut db = AtomDatabase::create(&path, CompressionType::None).unwrap();
+
+        let mol1 = Molecule::new_f64(vec![[0.0, 0.0, 0.0]], vec![6]).unwrap();
+        let mut mol2 = Molecule::new_f64(vec![[1.0, 1.0, 1.0]], vec![8]).unwrap();
+        mol2.forces = Some(Vec3Data::F64(vec![[0.1, 0.2, 0.3]]));
+
+        db.add_molecule(&mol1).unwrap();
+        db.add_molecule(&mol2).unwrap();
+        db.flush().unwrap();
+
+        let retrieved = db.get_molecule(1).unwrap();
+        assert_eq!(retrieved.forces, Some(Vec3Data::F64(vec![[0.1, 0.2, 0.3]])));
     }
 }

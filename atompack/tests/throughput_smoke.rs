@@ -1,5 +1,7 @@
 // Copyright 2026 Entalpic
-use atompack::{Atom, AtomDatabase, Molecule, compression::CompressionType};
+use atompack::{
+    Atom, AtomDatabase, FloatScalarData, Molecule, Vec3Data, compression::CompressionType,
+};
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
@@ -179,15 +181,15 @@ fn synthetic_molecule(id: usize) -> Molecule {
         })
         .collect();
     let mut molecule = Molecule::from_atoms(atoms);
-    molecule.energy = Some(-1_000.0 - id as f64 * 1e-3);
-    molecule.forces = Some(
+    molecule.energy = Some(FloatScalarData::F64(-1_000.0 - id as f64 * 1e-3));
+    molecule.forces = Some(Vec3Data::F32(
         (0..ATOMS_PER_MOLECULE)
             .map(|i| {
                 let t = id as f32 * 0.002 + i as f32 * 0.02;
                 [(t * 0.7).sin(), (t * 0.9).cos(), (t * 1.1).sin()]
             })
             .collect(),
-    );
+    ));
     molecule
 }
 
@@ -231,7 +233,7 @@ fn run_smoke() -> atompack::Result<Metrics> {
     for _ in 0..RANDOM_READS {
         let molecule = db.get_molecule(rng.index(db.len()))?;
         rand_atoms += molecule.len();
-        black_box(molecule.forces.as_ref().map(Vec::len));
+        black_box(molecule.forces.as_ref().map(Vec3Data::len));
     }
     let rand_elapsed = start_rand.elapsed();
     assert_eq!(rand_atoms, RANDOM_READS * ATOMS_PER_MOLECULE);

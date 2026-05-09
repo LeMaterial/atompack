@@ -105,157 +105,75 @@ pub(crate) fn pyarray2_from_cow<'py, T: Element + Clone>(
     }
 }
 
-struct WrittenSoaSection {
-    slot: BuiltinSlot,
-    section: LazySection,
-}
-
-fn write_soa_section_raw(
-    buf: &mut Vec<u8>,
-    kind: u8,
-    key: &str,
-    type_tag: u8,
-    payload: &[u8],
-) -> Result<WrittenSoaSection, String> {
-    let key_len: u8 = key
-        .len()
-        .try_into()
-        .map_err(|_| format!("Section key '{}' is too long", key))?;
-    let payload_len: u32 = payload
-        .len()
-        .try_into()
-        .map_err(|_| format!("Section '{}' payload is too large", key))?;
-    buf.push(kind);
-    buf.push(key_len);
-    let key_start = buf.len();
-    buf.extend_from_slice(key.as_bytes());
-    buf.push(type_tag);
-    buf.extend_from_slice(&payload_len.to_le_bytes());
-    let payload_start = buf.len();
-    buf.extend_from_slice(payload);
-    Ok(WrittenSoaSection {
-        slot: (payload_start, payload.len(), type_tag),
-        section: LazySection {
-            kind,
-            key_start,
-            key_len,
-            type_tag,
-            payload_start,
-            payload_len: payload.len(),
-        },
-    })
-}
-
-pub(crate) struct SoaBuiltinPayloads<'a> {
-    pub(crate) energy: Option<f64>,
-    pub(crate) forces: Option<&'a [u8]>,
-    pub(crate) charges: Option<&'a [u8]>,
-    pub(crate) velocities: Option<&'a [u8]>,
-    pub(crate) cell: Option<&'a [u8]>,
-    pub(crate) stress: Option<&'a [u8]>,
-    pub(crate) pbc: Option<[bool; 3]>,
-    pub(crate) name: Option<&'a str>,
-}
-
-pub(crate) struct SoaCustomSection<'a> {
+pub(crate) struct SoaSection<'a> {
     pub(crate) kind: u8,
     pub(crate) key: &'a str,
     pub(crate) type_tag: u8,
     pub(crate) payload: &'a [u8],
 }
 
-pub(crate) struct BuiltSoaRecord {
-    bytes: Vec<u8>,
-    n_atoms: usize,
-    positions_start: usize,
-    atomic_numbers_start: usize,
-    forces: Option<BuiltinSlot>,
-    energy: Option<BuiltinSlot>,
-    cell: Option<BuiltinSlot>,
-    stress: Option<BuiltinSlot>,
-    charges: Option<BuiltinSlot>,
-    velocities: Option<BuiltinSlot>,
-    pbc: Option<BuiltinSlot>,
-    name: Option<BuiltinSlot>,
-    custom_sections: Vec<LazySection>,
+pub(crate) struct SoaRecord<'a> {
+    pub(crate) record_format: u32,
+    pub(crate) positions_type: u8,
+    pub(crate) positions: &'a [u8],
+    pub(crate) atomic_numbers: &'a [u8],
+    pub(crate) sections: &'a [SoaSection<'a>],
 }
 
-impl BuiltSoaRecord {
-    pub(crate) fn into_parts(self) -> (Vec<u8>, u32) {
-        (self.bytes, self.n_atoms as u32)
-    }
-
-    pub(crate) fn into_view(self) -> SoaMoleculeView {
-        SoaMoleculeView {
-            bytes: SoaBytes::Owned(self.bytes),
-            n_atoms: self.n_atoms,
-            positions_start: self.positions_start,
-            atomic_numbers_start: self.atomic_numbers_start,
-            forces: self.forces,
-            energy: self.energy,
-            cell: self.cell,
-            stress: self.stress,
-            charges: self.charges,
-            velocities: self.velocities,
-            pbc: self.pbc,
-            name: self.name,
-            custom_sections: self.custom_sections,
-        }
-    }
+fn write_soa_section_raw(buf: &mut Vec<u8>, section: &SoaSection<'_>) -> Result<(), String> {
+    let key_len: u8 = section
+        .key
+        .len()
+        .try_into()
+        .map_err(|_| format!("Section key '{}' is too long", section.key))?;
+    let payload_len: u32 = section
+        .payload
+        .len()
+        .try_into()
+        .map_err(|_| format!("Section '{}' payload is too large", section.key))?;
+    buf.push(section.kind);
+    buf.push(key_len);
+    buf.extend_from_slice(section.key.as_bytes());
+    buf.push(section.type_tag);
+    buf.extend_from_slice(&payload_len.to_le_bytes());
+    buf.extend_from_slice(section.payload);
+    Ok(())
 }
 
-pub(crate) fn build_soa_record(
-    positions: &[f32],
-    atomic_numbers: &[u8],
-    builtins: SoaBuiltinPayloads<'_>,
-) -> Result<BuiltSoaRecord, String> {
-    build_soa_record_with_custom(positions, atomic_numbers, builtins, &[])
-}
-
-pub(crate) fn build_soa_record_with_custom(
-    positions: &[f32],
-    atomic_numbers: &[u8],
-    builtins: SoaBuiltinPayloads<'_>,
-    custom_sections: &[SoaCustomSection<'_>],
-) -> Result<BuiltSoaRecord, String> {
-    if !positions.len().is_multiple_of(3) {
-        return Err("positions length must be divisible by 3".to_string());
-    }
-    let n_atoms = positions.len() / 3;
-    if atomic_numbers.len() != n_atoms {
+pub(crate) fn build_soa_record(record: SoaRecord<'_>) -> Result<Vec<u8>, String> {
+    if !matches!(
+        record.record_format,
+        RECORD_FORMAT_SOA_V2 | RECORD_FORMAT_SOA_V3
+    ) {
         return Err(format!(
-            "Atomic numbers length ({}) doesn't match atom count ({})",
-            atomic_numbers.len(),
-            n_atoms
+            "Unsupported record format {}",
+            record.record_format
         ));
     }
-
-    let validate_bytes = |payload: &[u8], expected: usize, label: &str| -> Result<(), String> {
-        if payload.len() != expected {
-            return Err(format!(
-                "{} payload length ({}) doesn't match expected byte length ({})",
-                label,
-                payload.len(),
-                expected
-            ));
+    let positions_elem_bytes = match record.positions_type {
+        TYPE_VEC3_F32 => 12usize,
+        TYPE_VEC3_F64 => 24usize,
+        other => {
+            return Err(format!("Unsupported positions type tag {}", other));
         }
-        Ok(())
     };
-
-    if let Some(payload) = builtins.forces {
-        validate_bytes(payload, n_atoms * 12, "forces")?;
+    if record.record_format == RECORD_FORMAT_SOA_V2 && record.positions_type != TYPE_VEC3_F32 {
+        return Err("record format 2 only supports float32 positions".to_string());
     }
-    if let Some(payload) = builtins.charges {
-        validate_bytes(payload, n_atoms * 8, "charges")?;
+    if !record.positions.len().is_multiple_of(positions_elem_bytes) {
+        return Err(format!(
+            "positions payload length ({}) is not a multiple of {}",
+            record.positions.len(),
+            positions_elem_bytes
+        ));
     }
-    if let Some(payload) = builtins.velocities {
-        validate_bytes(payload, n_atoms * 12, "velocities")?;
-    }
-    if let Some(payload) = builtins.cell {
-        validate_bytes(payload, 72, "cell")?;
-    }
-    if let Some(payload) = builtins.stress {
-        validate_bytes(payload, 72, "stress")?;
+    let n_atoms = record.positions.len() / positions_elem_bytes;
+    if record.atomic_numbers.len() != n_atoms {
+        return Err(format!(
+            "Atomic numbers length ({}) doesn't match atom count ({})",
+            record.atomic_numbers.len(),
+            n_atoms
+        ));
     }
 
     let mut n_sections = 0u16;
@@ -267,31 +185,7 @@ pub(crate) fn build_soa_record_with_custom(
         section_overhead += 1 + 1 + key_len + 1 + 4;
     };
 
-    if let Some(payload) = builtins.charges {
-        account_section(payload.len(), "charges".len());
-    }
-    if let Some(payload) = builtins.cell {
-        account_section(payload.len(), "cell".len());
-    }
-    if builtins.energy.is_some() {
-        account_section(std::mem::size_of::<f64>(), "energy".len());
-    }
-    if let Some(payload) = builtins.forces {
-        account_section(payload.len(), "forces".len());
-    }
-    if let Some(value) = builtins.name {
-        account_section(value.len(), "name".len());
-    }
-    if builtins.pbc.is_some() {
-        account_section(3, "pbc".len());
-    }
-    if let Some(payload) = builtins.stress {
-        account_section(payload.len(), "stress".len());
-    }
-    if let Some(payload) = builtins.velocities {
-        account_section(payload.len(), "velocities".len());
-    }
-    for section in custom_sections {
+    for section in record.sections {
         let parsed = SectionRef {
             kind: section.kind,
             key: section.key,
@@ -312,7 +206,9 @@ pub(crate) fn build_soa_record_with_custom(
                 elem_bytes
             }
             TYPE_FLOAT | TYPE_INT => 8,
+            TYPE_FLOAT32 => 4,
             TYPE_BOOL3 => 3,
+            TYPE_MAT3X3_F32 => 36,
             TYPE_MAT3X3_F64 => 72,
             _ => parsed.payload.len(),
         };
@@ -328,188 +224,162 @@ pub(crate) fn build_soa_record_with_custom(
         account_section(parsed.payload.len(), parsed.key.len());
     }
 
-    let positions_start = 4usize;
-    let atomic_numbers_start = positions_start + positions.len() * 4;
+    let positions_type_bytes = usize::from(record.record_format == RECORD_FORMAT_SOA_V3);
     let mut buf = Vec::with_capacity(
-        4 + positions.len() * 4 + atomic_numbers.len() + 2 + section_overhead + payload_bytes,
+        4 + positions_type_bytes
+            + record.positions.len()
+            + record.atomic_numbers.len()
+            + 2
+            + section_overhead
+            + payload_bytes,
     );
     buf.extend_from_slice(&(n_atoms as u32).to_le_bytes());
-    buf.extend_from_slice(bytemuck::cast_slice::<f32, u8>(positions));
-    buf.extend_from_slice(atomic_numbers);
+    if record.record_format == RECORD_FORMAT_SOA_V3 {
+        buf.push(record.positions_type);
+    }
+    buf.extend_from_slice(record.positions);
+    buf.extend_from_slice(record.atomic_numbers);
     buf.extend_from_slice(&n_sections.to_le_bytes());
 
-    let mut charges = None;
-    let mut cell = None;
-    let mut energy_slot = None;
-    let mut forces = None;
-    let mut name = None;
-    let mut pbc = None;
-    let mut stress = None;
-    let mut velocities = None;
-    let mut custom_slots = Vec::with_capacity(custom_sections.len());
-
-    if let Some(payload) = builtins.charges {
-        charges = Some(
-            write_soa_section_raw(&mut buf, KIND_BUILTIN, "charges", TYPE_F64_ARRAY, payload)?.slot,
-        );
-    }
-    if let Some(payload) = builtins.cell {
-        cell = Some(
-            write_soa_section_raw(&mut buf, KIND_BUILTIN, "cell", TYPE_MAT3X3_F64, payload)?.slot,
-        );
-    }
-    if let Some(value) = builtins.energy {
-        let payload = value.to_le_bytes();
-        energy_slot = Some(
-            write_soa_section_raw(&mut buf, KIND_BUILTIN, "energy", TYPE_FLOAT, &payload)?.slot,
-        );
-    }
-    if let Some(payload) = builtins.forces {
-        forces = Some(
-            write_soa_section_raw(&mut buf, KIND_BUILTIN, "forces", TYPE_VEC3_F32, payload)?.slot,
-        );
-    }
-    if let Some(value) = builtins.name {
-        name = Some(
-            write_soa_section_raw(
-                &mut buf,
-                KIND_BUILTIN,
-                "name",
-                TYPE_STRING,
-                value.as_bytes(),
-            )?
-            .slot,
-        );
-    }
-    if let Some([a, b, c]) = builtins.pbc {
-        let payload = [a as u8, b as u8, c as u8];
-        pbc =
-            Some(write_soa_section_raw(&mut buf, KIND_BUILTIN, "pbc", TYPE_BOOL3, &payload)?.slot);
-    }
-    if let Some(payload) = builtins.stress {
-        stress = Some(
-            write_soa_section_raw(&mut buf, KIND_BUILTIN, "stress", TYPE_MAT3X3_F64, payload)?.slot,
-        );
-    }
-    if let Some(payload) = builtins.velocities {
-        velocities = Some(
-            write_soa_section_raw(&mut buf, KIND_BUILTIN, "velocities", TYPE_VEC3_F32, payload)?
-                .slot,
-        );
-    }
-    for section in custom_sections {
-        custom_slots.push(
-            write_soa_section_raw(
-                &mut buf,
-                section.kind,
-                section.key,
-                section.type_tag,
-                section.payload,
-            )?
-            .section,
-        );
+    for section in record.sections {
+        write_soa_section_raw(&mut buf, section)?;
     }
 
-    Ok(BuiltSoaRecord {
-        bytes: buf,
-        n_atoms,
-        positions_start,
-        atomic_numbers_start,
-        forces,
-        energy: energy_slot,
-        cell,
-        stress,
-        charges,
-        velocities,
-        pbc,
-        name,
-        custom_sections: custom_slots,
-    })
+    Ok(buf)
 }
 
-fn vec3_f32_payload<'py>(
-    readonly: &'py numpy::PyReadonlyArray2<'py, f32>,
+fn molecule_from_positions(
+    positions: Vec3Data,
+    atomic_numbers: Vec<u8>,
+) -> Result<Molecule, String> {
+    match positions {
+        Vec3Data::F32(values) => Molecule::new(values, atomic_numbers),
+        Vec3Data::F64(values) => Molecule::new_f64(values, atomic_numbers),
+    }
+}
+
+pub(crate) fn parse_vec3_field(
+    value: &Bound<'_, PyAny>,
     label: &str,
     expected_rows: usize,
-) -> PyResult<&'py [u8]> {
-    let arr = readonly.as_array();
-    let shape = arr.shape();
-    if shape != [expected_rows, 3] {
-        return Err(PyValueError::new_err(format!(
-            "{} must have shape ({}, 3)",
-            label, expected_rows
-        )));
-    }
-    let slice = readonly
-        .as_slice()
-        .map_err(|_| PyValueError::new_err(format!("{} must be C-contiguous", label)))?;
-    Ok(bytemuck::cast_slice::<f32, u8>(slice))
-}
-
-fn vec1_f64_payload<'py>(
-    readonly: &'py numpy::PyReadonlyArray1<'py, f64>,
-    label: &str,
-    expected_len: usize,
-) -> PyResult<&'py [u8]> {
-    let arr = readonly.as_array();
-    if arr.len() != expected_len {
-        return Err(PyValueError::new_err(format!(
-            "{} length ({}) doesn't match atom count ({})",
-            label,
-            arr.len(),
-            expected_len
-        )));
-    }
-    let slice = readonly
-        .as_slice()
-        .map_err(|_| PyValueError::new_err(format!("{} must be C-contiguous", label)))?;
-    Ok(bytemuck::cast_slice::<f64, u8>(slice))
-}
-
-fn mat3x3_f64_payload<'py>(
-    readonly: &'py numpy::PyReadonlyArray2<'py, f64>,
-    label: &str,
-) -> PyResult<&'py [u8]> {
-    let arr = readonly.as_array();
-    if arr.shape() != [3, 3] {
-        return Err(PyValueError::new_err(format!(
-            "{} must have shape (3, 3)",
-            label
-        )));
-    }
-    let slice = readonly
-        .as_slice()
-        .map_err(|_| PyValueError::new_err(format!("{} must be C-contiguous", label)))?;
-    Ok(bytemuck::cast_slice::<f64, u8>(slice))
-}
-
-fn mat3x3_f64_payload_from_any(py: Python<'_>, value: Py<PyAny>, label: &str) -> PyResult<Vec<u8>> {
-    let value = value.bind(py);
-    if let Ok(arr) = value.cast::<PyArray2<f64>>() {
-        let readonly = arr.readonly();
-        return Ok(mat3x3_f64_payload(&readonly, label)?.to_vec());
-    }
+) -> PyResult<Vec3Data> {
     if let Ok(arr) = value.cast::<PyArray2<f32>>() {
         let readonly = arr.readonly();
-        let arr = readonly.as_array();
-        if arr.shape() != [3, 3] {
+        let view = readonly.as_array();
+        if view.shape() != [expected_rows, 3] {
+            return Err(PyValueError::new_err(format!(
+                "{} must have shape ({}, 3)",
+                label, expected_rows
+            )));
+        }
+        return Ok(Vec3Data::F32(
+            view.outer_iter()
+                .map(|row| [row[0], row[1], row[2]])
+                .collect(),
+        ));
+    }
+    if let Ok(arr) = value.cast::<PyArray2<f64>>() {
+        let readonly = arr.readonly();
+        let view = readonly.as_array();
+        if view.shape() != [expected_rows, 3] {
+            return Err(PyValueError::new_err(format!(
+                "{} must have shape ({}, 3)",
+                label, expected_rows
+            )));
+        }
+        return Ok(Vec3Data::F64(
+            view.outer_iter()
+                .map(|row| [row[0], row[1], row[2]])
+                .collect(),
+        ));
+    }
+    Err(PyValueError::new_err(format!(
+        "{} must be a float32 or float64 ndarray with shape ({}, 3)",
+        label, expected_rows
+    )))
+}
+
+pub(crate) fn parse_float_array_field(
+    value: &Bound<'_, PyAny>,
+    label: &str,
+    expected_len: usize,
+) -> PyResult<FloatArrayData> {
+    if let Ok(arr) = value.cast::<PyArray1<f32>>() {
+        let values = arr.readonly().as_array().to_vec();
+        if values.len() != expected_len {
+            return Err(PyValueError::new_err(format!(
+                "{} length ({}) doesn't match atom count ({})",
+                label,
+                values.len(),
+                expected_len
+            )));
+        }
+        return Ok(FloatArrayData::F32(values));
+    }
+    if let Ok(arr) = value.cast::<PyArray1<f64>>() {
+        let values = arr.readonly().as_array().to_vec();
+        if values.len() != expected_len {
+            return Err(PyValueError::new_err(format!(
+                "{} length ({}) doesn't match atom count ({})",
+                label,
+                values.len(),
+                expected_len
+            )));
+        }
+        return Ok(FloatArrayData::F64(values));
+    }
+    Err(PyValueError::new_err(format!(
+        "{} must be a float32 or float64 ndarray with shape ({},)",
+        label, expected_len
+    )))
+}
+
+pub(crate) fn parse_mat3_field(value: &Bound<'_, PyAny>, label: &str) -> PyResult<Mat3Data> {
+    if let Ok(arr) = value.cast::<PyArray2<f32>>() {
+        let readonly = arr.readonly();
+        let view = readonly.as_array();
+        if view.shape() != [3, 3] {
             return Err(PyValueError::new_err(format!(
                 "{} must have shape (3, 3)",
                 label
             )));
         }
-        let mut payload = Vec::with_capacity(72);
-        for row in arr.outer_iter() {
-            for value in row {
-                payload.extend_from_slice(&(*value as f64).to_le_bytes());
-            }
+        return Ok(Mat3Data::F32([
+            [view[[0, 0]], view[[0, 1]], view[[0, 2]]],
+            [view[[1, 0]], view[[1, 1]], view[[1, 2]]],
+            [view[[2, 0]], view[[2, 1]], view[[2, 2]]],
+        ]));
+    }
+    if let Ok(arr) = value.cast::<PyArray2<f64>>() {
+        let readonly = arr.readonly();
+        let view = readonly.as_array();
+        if view.shape() != [3, 3] {
+            return Err(PyValueError::new_err(format!(
+                "{} must have shape (3, 3)",
+                label
+            )));
         }
-        return Ok(payload);
+        return Ok(Mat3Data::F64([
+            [view[[0, 0]], view[[0, 1]], view[[0, 2]]],
+            [view[[1, 0]], view[[1, 1]], view[[1, 2]]],
+            [view[[2, 0]], view[[2, 1]], view[[2, 2]]],
+        ]));
     }
     Err(PyValueError::new_err(format!(
         "{} must be a float32 or float64 ndarray with shape (3, 3)",
         label
     )))
+}
+
+pub(crate) fn molecule_from_numpy_arrays(
+    positions: &Bound<'_, PyAny>,
+    atomic_numbers: &Bound<'_, PyArray1<u8>>,
+) -> PyResult<Molecule> {
+    let z = atomic_numbers.readonly();
+    let z_arr = z.as_array();
+    let atomic_numbers_vec = z_arr.to_vec();
+    let positions = parse_vec3_field(positions, "positions", atomic_numbers_vec.len())?;
+    molecule_from_positions(positions, atomic_numbers_vec).map_err(PyValueError::new_err)
 }
 
 pub(super) fn into_py_any<'py, T>(py: Python<'py>, value: T) -> PyResult<Py<PyAny>>
@@ -624,31 +494,58 @@ fn is_reserved_ase_array_key(key: &str) -> bool {
     matches!(key, "numbers" | "positions")
 }
 
-fn owned_vec3_array<'py>(
-    py: Python<'py>,
-    values: &[[f32; 3]],
-) -> PyResult<Bound<'py, PyArray2<f32>>> {
-    let n_atoms = values.len();
-    let flat: Vec<f32> = values
-        .iter()
-        .flat_map(|value| [value[0], value[1], value[2]])
-        .collect();
-    pyarray2_from_flat(py, flat, n_atoms, 3)
+fn owned_vec3_array<'py>(py: Python<'py>, values: &Vec3Data) -> PyResult<Py<PyAny>> {
+    Ok(match values {
+        Vec3Data::F32(values) => {
+            let n_atoms = values.len();
+            let flat: Vec<f32> = values
+                .iter()
+                .flat_map(|value| [value[0], value[1], value[2]])
+                .collect();
+            pyarray2_from_flat(py, flat, n_atoms, 3)?
+                .into_any()
+                .unbind()
+        }
+        Vec3Data::F64(values) => {
+            let n_atoms = values.len();
+            let flat: Vec<f64> = values
+                .iter()
+                .flat_map(|value| [value[0], value[1], value[2]])
+                .collect();
+            pyarray2_from_flat(py, flat, n_atoms, 3)?
+                .into_any()
+                .unbind()
+        }
+    })
 }
 
-fn owned_mat3x3_array<'py>(
-    py: Python<'py>,
-    values: &[[f64; 3]; 3],
-) -> PyResult<Bound<'py, PyArray2<f64>>> {
-    let flat: Vec<f64> = values
-        .iter()
-        .flat_map(|row| [row[0], row[1], row[2]])
-        .collect();
-    pyarray2_from_flat(py, flat, 3, 3)
+fn owned_float_array<'py>(py: Python<'py>, values: &FloatArrayData) -> Py<PyAny> {
+    match values {
+        FloatArrayData::F32(values) => PyArray1::from_slice(py, values).into_any().unbind(),
+        FloatArrayData::F64(values) => PyArray1::from_slice(py, values).into_any().unbind(),
+    }
+}
+
+fn owned_mat3x3_array<'py>(py: Python<'py>, values: &Mat3Data) -> PyResult<Py<PyAny>> {
+    Ok(match values {
+        Mat3Data::F32(values) => {
+            let flat: Vec<f32> = values
+                .iter()
+                .flat_map(|row| [row[0], row[1], row[2]])
+                .collect();
+            pyarray2_from_flat(py, flat, 3, 3)?.into_any().unbind()
+        }
+        Mat3Data::F64(values) => {
+            let flat: Vec<f64> = values
+                .iter()
+                .flat_map(|row| [row[0], row[1], row[2]])
+                .collect();
+            pyarray2_from_flat(py, flat, 3, 3)?.into_any().unbind()
+        }
+    })
 }
 
 impl PyMolecule {
-    #[allow(dead_code)]
     pub(crate) fn from_owned(inner: Molecule) -> Self {
         Self {
             backing: MoleculeBacking::Owned(inner),
@@ -661,14 +558,14 @@ impl PyMolecule {
         }
     }
 
-    pub(super) fn as_owned(&self) -> Option<&Molecule> {
+    pub(crate) fn as_owned(&self) -> Option<&Molecule> {
         match &self.backing {
             MoleculeBacking::Owned(inner) => Some(inner),
             MoleculeBacking::View(_) => None,
         }
     }
 
-    pub(super) fn as_view(&self) -> Option<&SoaMoleculeView> {
+    pub(crate) fn as_view(&self) -> Option<&SoaMoleculeView> {
         match &self.backing {
             MoleculeBacking::Owned(_) => None,
             MoleculeBacking::View(view) => Some(view),
@@ -701,22 +598,31 @@ impl PyMolecule {
         }
     }
 
-    pub(crate) fn soa_bytes(&self) -> Option<(&[u8], u32)> {
-        match &self.backing {
-            MoleculeBacking::View(view) => Some((view.bytes.as_slice(), view.n_atoms as u32)),
-            MoleculeBacking::Owned(_) => None,
-        }
-    }
-
-    pub(super) fn positions_py<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f32>>> {
+    pub(super) fn positions_py<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         if let Some(inner) = self.as_owned() {
-            return pyarray2_from_flat(py, inner.positions_flat(), inner.len(), 3);
+            return owned_vec3_array(py, &inner.positions);
         }
         let view = self.as_view().ok_or_else(|| {
             PyValueError::new_err("Molecule is missing both owned and view state")
         })?;
-        let positions = cast_or_decode_f32(view.positions_bytes())?;
-        pyarray2_from_cow(py, positions, view.n_atoms, 3)
+        match view.positions_type {
+            TYPE_VEC3_F32 => {
+                let positions = cast_or_decode_f32(view.positions_bytes())?;
+                Ok(pyarray2_from_cow(py, positions, view.n_atoms, 3)?
+                    .into_any()
+                    .unbind())
+            }
+            TYPE_VEC3_F64 => {
+                let positions = cast_or_decode_f64(view.positions_bytes())?;
+                Ok(pyarray2_from_cow(py, positions, view.n_atoms, 3)?
+                    .into_any()
+                    .unbind())
+            }
+            other => Err(PyValueError::new_err(format!(
+                "Unsupported positions type tag {}",
+                other
+            ))),
+        }
     }
 
     pub(super) fn atomic_numbers_py<'py>(
@@ -732,10 +638,7 @@ impl PyMolecule {
         Ok(PyArray1::from_slice(py, view.atomic_numbers_bytes()))
     }
 
-    pub(super) fn forces_py<'py>(
-        &self,
-        py: Python<'py>,
-    ) -> PyResult<Option<Bound<'py, PyArray2<f32>>>> {
+    pub(super) fn forces_py<'py>(&self, py: Python<'py>) -> PyResult<Option<Py<PyAny>>> {
         if let Some(inner) = self.as_owned() {
             return inner
                 .forces
@@ -749,22 +652,39 @@ impl PyMolecule {
         let Some(slot) = view.forces else {
             return Ok(None);
         };
-        if slot.2 != TYPE_VEC3_F32 || slot.1 != view.n_atoms * 12 {
-            return Err(PyValueError::new_err("Invalid forces section"));
+        match slot.2 {
+            TYPE_VEC3_F32 => {
+                if slot.1 != view.n_atoms * 12 {
+                    return Err(PyValueError::new_err("Invalid forces section"));
+                }
+                let data = cast_or_decode_f32(view.builtin_payload(slot))?;
+                Ok(Some(
+                    pyarray2_from_cow(py, data, view.n_atoms, 3)?
+                        .into_any()
+                        .unbind(),
+                ))
+            }
+            TYPE_VEC3_F64 => {
+                if slot.1 != view.n_atoms * 24 {
+                    return Err(PyValueError::new_err("Invalid forces section"));
+                }
+                let data = cast_or_decode_f64(view.builtin_payload(slot))?;
+                Ok(Some(
+                    pyarray2_from_cow(py, data, view.n_atoms, 3)?
+                        .into_any()
+                        .unbind(),
+                ))
+            }
+            _ => Err(PyValueError::new_err("Invalid forces section")),
         }
-        let data = cast_or_decode_f32(view.builtin_payload(slot))?;
-        Ok(Some(pyarray2_from_cow(py, data, view.n_atoms, 3)?))
     }
 
-    pub(super) fn charges_py<'py>(
-        &self,
-        py: Python<'py>,
-    ) -> PyResult<Option<Bound<'py, PyArray1<f64>>>> {
+    pub(super) fn charges_py<'py>(&self, py: Python<'py>) -> PyResult<Option<Py<PyAny>>> {
         if let Some(inner) = self.as_owned() {
             return Ok(inner
                 .charges
                 .as_ref()
-                .map(|charges| PyArray1::from_slice(py, charges)));
+                .map(|charges| owned_float_array(py, charges)));
         }
         let view = self.as_view().ok_or_else(|| {
             PyValueError::new_err("Molecule is missing both owned and view state")
@@ -772,17 +692,26 @@ impl PyMolecule {
         let Some(slot) = view.charges else {
             return Ok(None);
         };
-        if slot.2 != TYPE_F64_ARRAY || slot.1 != view.n_atoms * 8 {
-            return Err(PyValueError::new_err("Invalid charges section"));
+        match slot.2 {
+            TYPE_F32_ARRAY => {
+                if slot.1 != view.n_atoms * 4 {
+                    return Err(PyValueError::new_err("Invalid charges section"));
+                }
+                let data = cast_or_decode_f32(view.builtin_payload(slot))?;
+                Ok(Some(pyarray1_from_cow(py, data).into_any().unbind()))
+            }
+            TYPE_F64_ARRAY => {
+                if slot.1 != view.n_atoms * 8 {
+                    return Err(PyValueError::new_err("Invalid charges section"));
+                }
+                let data = cast_or_decode_f64(view.builtin_payload(slot))?;
+                Ok(Some(pyarray1_from_cow(py, data).into_any().unbind()))
+            }
+            _ => Err(PyValueError::new_err("Invalid charges section")),
         }
-        let data = cast_or_decode_f64(view.builtin_payload(slot))?;
-        Ok(Some(pyarray1_from_cow(py, data)))
     }
 
-    pub(super) fn velocities_py<'py>(
-        &self,
-        py: Python<'py>,
-    ) -> PyResult<Option<Bound<'py, PyArray2<f32>>>> {
+    pub(super) fn velocities_py<'py>(&self, py: Python<'py>) -> PyResult<Option<Py<PyAny>>> {
         if let Some(inner) = self.as_owned() {
             return inner
                 .velocities
@@ -796,17 +725,34 @@ impl PyMolecule {
         let Some(slot) = view.velocities else {
             return Ok(None);
         };
-        if slot.2 != TYPE_VEC3_F32 || slot.1 != view.n_atoms * 12 {
-            return Err(PyValueError::new_err("Invalid velocities section"));
+        match slot.2 {
+            TYPE_VEC3_F32 => {
+                if slot.1 != view.n_atoms * 12 {
+                    return Err(PyValueError::new_err("Invalid velocities section"));
+                }
+                let data = cast_or_decode_f32(view.builtin_payload(slot))?;
+                Ok(Some(
+                    pyarray2_from_cow(py, data, view.n_atoms, 3)?
+                        .into_any()
+                        .unbind(),
+                ))
+            }
+            TYPE_VEC3_F64 => {
+                if slot.1 != view.n_atoms * 24 {
+                    return Err(PyValueError::new_err("Invalid velocities section"));
+                }
+                let data = cast_or_decode_f64(view.builtin_payload(slot))?;
+                Ok(Some(
+                    pyarray2_from_cow(py, data, view.n_atoms, 3)?
+                        .into_any()
+                        .unbind(),
+                ))
+            }
+            _ => Err(PyValueError::new_err("Invalid velocities section")),
         }
-        let data = cast_or_decode_f32(view.builtin_payload(slot))?;
-        Ok(Some(pyarray2_from_cow(py, data, view.n_atoms, 3)?))
     }
 
-    pub(super) fn cell_py<'py>(
-        &self,
-        py: Python<'py>,
-    ) -> PyResult<Option<Bound<'py, PyArray2<f64>>>> {
+    pub(super) fn cell_py<'py>(&self, py: Python<'py>) -> PyResult<Option<Py<PyAny>>> {
         if let Some(inner) = self.as_owned() {
             return inner
                 .cell
@@ -820,17 +766,26 @@ impl PyMolecule {
         let Some(slot) = view.cell else {
             return Ok(None);
         };
-        if slot.2 != TYPE_MAT3X3_F64 || slot.1 != 72 {
-            return Err(PyValueError::new_err("Invalid cell section"));
+        match slot.2 {
+            TYPE_MAT3X3_F32 => {
+                if slot.1 != 36 {
+                    return Err(PyValueError::new_err("Invalid cell section"));
+                }
+                let data = cast_or_decode_f32(view.builtin_payload(slot))?;
+                Ok(Some(pyarray2_from_cow(py, data, 3, 3)?.into_any().unbind()))
+            }
+            TYPE_MAT3X3_F64 => {
+                if slot.1 != 72 {
+                    return Err(PyValueError::new_err("Invalid cell section"));
+                }
+                let data = cast_or_decode_f64(view.builtin_payload(slot))?;
+                Ok(Some(pyarray2_from_cow(py, data, 3, 3)?.into_any().unbind()))
+            }
+            _ => Err(PyValueError::new_err("Invalid cell section")),
         }
-        let data = cast_or_decode_f64(view.builtin_payload(slot))?;
-        Ok(Some(pyarray2_from_cow(py, data, 3, 3)?))
     }
 
-    pub(super) fn stress_py<'py>(
-        &self,
-        py: Python<'py>,
-    ) -> PyResult<Option<Bound<'py, PyArray2<f64>>>> {
+    pub(super) fn stress_py<'py>(&self, py: Python<'py>) -> PyResult<Option<Py<PyAny>>> {
         if let Some(inner) = self.as_owned() {
             return inner
                 .stress
@@ -844,11 +799,23 @@ impl PyMolecule {
         let Some(slot) = view.stress else {
             return Ok(None);
         };
-        if slot.2 != TYPE_MAT3X3_F64 || slot.1 != 72 {
-            return Err(PyValueError::new_err("Invalid stress section"));
+        match slot.2 {
+            TYPE_MAT3X3_F32 => {
+                if slot.1 != 36 {
+                    return Err(PyValueError::new_err("Invalid stress section"));
+                }
+                let data = cast_or_decode_f32(view.builtin_payload(slot))?;
+                Ok(Some(pyarray2_from_cow(py, data, 3, 3)?.into_any().unbind()))
+            }
+            TYPE_MAT3X3_F64 => {
+                if slot.1 != 72 {
+                    return Err(PyValueError::new_err("Invalid stress section"));
+                }
+                let data = cast_or_decode_f64(view.builtin_payload(slot))?;
+                Ok(Some(pyarray2_from_cow(py, data, 3, 3)?.into_any().unbind()))
+            }
+            _ => Err(PyValueError::new_err("Invalid stress section")),
         }
-        let data = cast_or_decode_f64(view.builtin_payload(slot))?;
-        Ok(Some(pyarray2_from_cow(py, data, 3, 3)?))
     }
 
     pub(super) fn append_owned_ase_properties<'py>(
@@ -920,84 +887,59 @@ impl PyMolecule {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn from_arrays_impl(
         py: Python<'_>,
-        positions: &Bound<'_, PyArray2<f32>>,
+        positions: &Bound<'_, PyAny>,
         atomic_numbers: &Bound<'_, PyArray1<u8>>,
         energy: Option<f64>,
-        forces: Option<&Bound<'_, PyArray2<f32>>>,
-        charges: Option<&Bound<'_, PyArray1<f64>>>,
-        velocities: Option<&Bound<'_, PyArray2<f32>>>,
-        cell: Option<&Bound<'_, PyArray2<f64>>>,
+        forces: Option<Py<PyAny>>,
+        charges: Option<Py<PyAny>>,
+        velocities: Option<Py<PyAny>>,
+        cell: Option<Py<PyAny>>,
         stress: Option<Py<PyAny>>,
         pbc: Option<(bool, bool, bool)>,
         name: Option<String>,
     ) -> PyResult<Self> {
-        let pos = positions.readonly();
-        let pos_arr = pos.as_array();
-        let shape = pos_arr.shape();
-        if shape.len() != 2 || shape[1] != 3 {
-            return Err(PyValueError::new_err(
-                "positions must have shape (n_atoms, 3)",
-            ));
+        let mut molecule = molecule_from_numpy_arrays(positions, atomic_numbers)?;
+
+        if let Some(name) = name {
+            molecule.name = Some(name);
+        }
+        if let Some(energy) = energy {
+            molecule.energy = Some(FloatScalarData::F64(energy));
+        }
+        if let Some((a, b, c)) = pbc {
+            molecule.pbc = Some([a, b, c]);
         }
 
-        let z = atomic_numbers.readonly();
-        let z_arr = z.as_array();
-        let n_atoms = shape[0];
-        if z_arr.len() != n_atoms {
-            return Err(PyValueError::new_err(format!(
-                "Atomic numbers length ({}) doesn't match atom count ({})",
-                z_arr.len(),
-                n_atoms
-            )));
+        let n_atoms = molecule.len();
+
+        if let Some(forces) = forces {
+            molecule.forces = Some(parse_vec3_field(forces.bind(py), "forces", n_atoms)?);
         }
 
-        let pos_bytes = pos_arr
-            .as_slice()
-            .ok_or_else(|| PyValueError::new_err("positions must be C-contiguous"))?;
-        let z_bytes = z_arr
-            .as_slice()
-            .ok_or_else(|| PyValueError::new_err("atomic_numbers must be C-contiguous"))?;
+        if let Some(charges) = charges {
+            molecule.charges = Some(parse_float_array_field(
+                charges.bind(py),
+                "charges",
+                n_atoms,
+            )?);
+        }
 
-        let forces_readonly = forces.map(|value| value.readonly());
-        let charges_readonly = charges.map(|value| value.readonly());
-        let velocities_readonly = velocities.map(|value| value.readonly());
-        let cell_readonly = cell.map(|value| value.readonly());
+        if let Some(velocities) = velocities {
+            molecule.velocities = Some(parse_vec3_field(
+                velocities.bind(py),
+                "velocities",
+                n_atoms,
+            )?);
+        }
 
-        let forces_payload = forces_readonly
-            .as_ref()
-            .map(|readonly| vec3_f32_payload(readonly, "forces", n_atoms))
-            .transpose()?;
-        let charges_payload = charges_readonly
-            .as_ref()
-            .map(|readonly| vec1_f64_payload(readonly, "charges", n_atoms))
-            .transpose()?;
-        let velocities_payload = velocities_readonly
-            .as_ref()
-            .map(|readonly| vec3_f32_payload(readonly, "velocities", n_atoms))
-            .transpose()?;
-        let cell_payload = cell_readonly
-            .as_ref()
-            .map(|readonly| mat3x3_f64_payload(readonly, "cell"))
-            .transpose()?;
-        let stress_payload = stress
-            .map(|value| mat3x3_f64_payload_from_any(py, value, "stress"))
-            .transpose()?;
-        let record = build_soa_record(
-            pos_bytes,
-            z_bytes,
-            SoaBuiltinPayloads {
-                energy,
-                forces: forces_payload,
-                charges: charges_payload,
-                velocities: velocities_payload,
-                cell: cell_payload,
-                stress: stress_payload.as_deref(),
-                pbc: pbc.map(|(a, b, c)| [a, b, c]),
-                name: name.as_deref(),
-            },
-        )
-        .map_err(PyValueError::new_err)?;
+        if let Some(cell) = cell {
+            molecule.cell = Some(parse_mat3_field(cell.bind(py), "cell")?);
+        }
 
-        Ok(Self::from_view(record.into_view()))
+        if let Some(stress) = stress {
+            molecule.stress = Some(parse_mat3_field(stress.bind(py), "stress")?);
+        }
+
+        Ok(Self::from_owned(molecule))
     }
 }
