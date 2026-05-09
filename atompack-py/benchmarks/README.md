@@ -64,7 +64,8 @@ Notes:
 - `get_molecules_flat(...)` remains the fastest tensor-batch path when the
   consumer can work with concatenated arrays directly.
 - `hdf5_soa` reflects the usual chunked-dataset HDF5 layout used for
-  fixed-shape materials data and is part of the default benchmark environment.
+  fixed-shape materials data; install with `pip install atompack-db[benchmarks]`
+  to pull in the `h5py` dependency.
 - `lmdb_packed` now participates in the synthetic custom-property variants in
   this suite too; `lmdb_soa` remains the builtins-only helper baseline.
 - In this suite, `hdf5_soa` is intentionally read one molecule at a time so it
@@ -330,8 +331,9 @@ tuning that matters most for dataloader-like access:
 - reader-side raw chunk cache sizing through `h5py` open options
 - batch reads that regroup requested indices by chunk before rebuilding payloads
 
-This backend is included in the default benchmark environment through the base
-project dependencies.
+This backend depends on `h5py`, which is shipped as the `[benchmarks]` extra:
+install with `pip install atompack-db[benchmarks]` (or `make py-test-benchmarks`
+which now uses both the `dev` and `benchmarks` extras).
 
 ### `atom_lmdb_soa.py`
 

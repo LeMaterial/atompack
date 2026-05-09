@@ -85,7 +85,7 @@ py-test: py-dev
 
 py-test-benchmarks: py-dev
 	@command -v $(UV) >/dev/null 2>&1 || (echo "uv not found; install from https://docs.astral.sh/uv/" && exit 1)
-	cd atompack-py && UV_CACHE_DIR=$(UV_CACHE_DIR) $(UV) run --extra dev --locked pytest tests/benchmarks
+	cd atompack-py && UV_CACHE_DIR=$(UV_CACHE_DIR) $(UV) run --extra dev --extra benchmarks --locked pytest tests/benchmarks
 
 perf-smoke-rust:
 	ATOMPACK_PERF_COLOR=$(ATOMPACK_PERF_COLOR) cargo test --release -p atompack --test throughput_smoke -- --ignored --nocapture
