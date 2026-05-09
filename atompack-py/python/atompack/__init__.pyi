@@ -569,6 +569,18 @@ class Database:
         ``properties`` and ``atom_properties`` dictionaries when present.
         """
         ...
+    def num_atoms(self, index: int) -> int:
+        """
+        Get the atom count for one molecule without materializing it.
+        """
+        ...
+    def atom_counts(self, indices: list[int] | None = None) -> npt.NDArray[np.uint32]:
+        """
+        Get atom counts for a selection of molecules.
+
+        Passing ``indices=None`` returns counts for the whole database.
+        """
+        ...
     def to_ase_batch(
         self,
         indices: list[int] | None = None,

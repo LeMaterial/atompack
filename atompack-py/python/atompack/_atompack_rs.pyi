@@ -508,6 +508,18 @@ class PyAtomDatabase:
         ``properties`` and ``atom_properties`` dictionaries when present.
         """
         ...
+    def num_atoms(self, index: int) -> int:
+        """
+        Get the atom count for one molecule without materializing it.
+        """
+        ...
+    def atom_counts(self, indices: Sequence[int] | None = None) -> np.ndarray:
+        """
+        Get atom counts for a selection of molecules as ``uint32`` values.
+
+        Passing ``indices=None`` returns counts for the whole database.
+        """
+        ...
 
     def __len__(self) -> int:
         """

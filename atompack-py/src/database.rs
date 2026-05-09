@@ -332,6 +332,32 @@ impl PyAtomDatabase {
         flat::get_molecules_flat_soa_impl(&self.inner, py, indices)
     }
 
+    /// Get the atom count for one molecule without materializing it.
+    fn num_atoms(&self, index: usize) -> PyResult<u32> {
+        self.inner.num_atoms(index).ok_or_else(|| {
+            PyIndexError::new_err(format!(
+                "Index {} out of bounds for database of length {}",
+                index,
+                self.inner.len()
+            ))
+        })
+    }
+
+    /// Get atom counts for a selection of molecules.
+    #[pyo3(signature = (indices=None))]
+    fn atom_counts<'py>(
+        &self,
+        py: Python<'py>,
+        indices: Option<Vec<usize>>,
+    ) -> PyResult<Bound<'py, PyArray1<u32>>> {
+        let selected = indices.unwrap_or_else(|| (0..self.inner.len()).collect());
+        let counts = selected
+            .into_iter()
+            .map(|index| self.num_atoms(index))
+            .collect::<PyResult<Vec<_>>>()?;
+        Ok(PyArray1::from_slice(py, &counts))
+    }
+
     /// Get the number of molecules in the database
     fn __len__(&self) -> usize {
         self.inner.len()
