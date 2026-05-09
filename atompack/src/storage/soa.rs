@@ -1,13 +1,37 @@
 use super::*;
 
 /// Write a single tagged section: [kind:u8][key_len:u8][key][type_tag:u8][payload_len:u32][payload]
-fn write_section(buf: &mut Vec<u8>, kind: u8, key: &str, type_tag: u8, payload: &[u8]) {
+///
+/// Errors instead of silently truncating when the key exceeds the 255-byte
+/// `key_len: u8` field or the payload exceeds the `u32` length field.
+fn write_section(
+    buf: &mut Vec<u8>,
+    kind: u8,
+    key: &str,
+    type_tag: u8,
+    payload: &[u8],
+) -> Result<()> {
+    let key_len: u8 = key.len().try_into().map_err(|_| {
+        Error::InvalidData(format!(
+            "Section key '{}...' is {} bytes; max is 255",
+            &key[..32.min(key.len())],
+            key.len()
+        ))
+    })?;
+    let payload_len: u32 = payload.len().try_into().map_err(|_| {
+        Error::InvalidData(format!(
+            "Section '{}' payload is {} bytes; max is u32::MAX",
+            key,
+            payload.len()
+        ))
+    })?;
     buf.push(kind);
-    buf.push(key.len() as u8);
+    buf.push(key_len);
     buf.extend_from_slice(key.as_bytes());
     buf.push(type_tag);
-    buf.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&payload_len.to_le_bytes());
     buf.extend_from_slice(payload);
+    Ok(())
 }
 
 fn property_value_type_tag(value: &PropertyValue) -> u8 {
@@ -236,7 +260,7 @@ pub(super) fn serialize_molecule_soa(molecule: &Molecule) -> Result<Vec<u8>> {
     }
     buf.extend_from_slice(&molecule.atomic_numbers);
 
-    let mut n_sections: u16 = 0;
+    let mut n_sections: usize = 0;
     if molecule.charges.is_some() {
         n_sections += 1;
     }
@@ -261,21 +285,28 @@ pub(super) fn serialize_molecule_soa(molecule: &Molecule) -> Result<Vec<u8>> {
     if molecule.velocities.is_some() {
         n_sections += 1;
     }
-    n_sections += molecule.atom_properties.len() as u16;
-    n_sections += molecule.properties.len() as u16;
-    buf.extend_from_slice(&n_sections.to_le_bytes());
+    n_sections += molecule.atom_properties.len();
+    n_sections += molecule.properties.len();
+    let n_sections_u16: u16 = n_sections.try_into().map_err(|_| {
+        Error::InvalidData(format!(
+            "Molecule has {} sections; on-disk format limit is {}",
+            n_sections,
+            u16::MAX
+        ))
+    })?;
+    buf.extend_from_slice(&n_sections_u16.to_le_bytes());
 
     if let Some(ref charges) = molecule.charges {
         let mut payload = Vec::with_capacity(charges.len() * 8);
         extend_f64(&mut payload, charges);
-        write_section(&mut buf, KIND_BUILTIN, "charges", TYPE_F64_ARRAY, &payload);
+        write_section(&mut buf, KIND_BUILTIN, "charges", TYPE_F64_ARRAY, &payload)?;
     }
     if let Some(ref cell) = molecule.cell {
         let mut payload = Vec::with_capacity(72);
         for row in cell {
             extend_f64(&mut payload, row);
         }
-        write_section(&mut buf, KIND_BUILTIN, "cell", TYPE_MAT3X3_F64, &payload);
+        write_section(&mut buf, KIND_BUILTIN, "cell", TYPE_MAT3X3_F64, &payload)?;
     }
     if let Some(energy) = molecule.energy {
         write_section(
@@ -284,28 +315,28 @@ pub(super) fn serialize_molecule_soa(molecule: &Molecule) -> Result<Vec<u8>> {
             "energy",
             TYPE_FLOAT,
             &energy.to_le_bytes(),
-        );
+        )?;
     }
     if let Some(ref forces) = molecule.forces {
         let mut payload = Vec::with_capacity(forces.len() * 12);
         for f in forces {
             extend_f32(&mut payload, f);
         }
-        write_section(&mut buf, KIND_BUILTIN, "forces", TYPE_VEC3_F32, &payload);
+        write_section(&mut buf, KIND_BUILTIN, "forces", TYPE_VEC3_F32, &payload)?;
     }
     if let Some(ref name) = molecule.name {
-        write_section(&mut buf, KIND_BUILTIN, "name", TYPE_STRING, name.as_bytes());
+        write_section(&mut buf, KIND_BUILTIN, "name", TYPE_STRING, name.as_bytes())?;
     }
     if let Some(ref pbc) = molecule.pbc {
         let payload = [pbc[0] as u8, pbc[1] as u8, pbc[2] as u8];
-        write_section(&mut buf, KIND_BUILTIN, "pbc", TYPE_BOOL3, &payload);
+        write_section(&mut buf, KIND_BUILTIN, "pbc", TYPE_BOOL3, &payload)?;
     }
     if let Some(ref stress) = molecule.stress {
         let mut payload = Vec::with_capacity(72);
         for row in stress {
             extend_f64(&mut payload, row);
         }
-        write_section(&mut buf, KIND_BUILTIN, "stress", TYPE_MAT3X3_F64, &payload);
+        write_section(&mut buf, KIND_BUILTIN, "stress", TYPE_MAT3X3_F64, &payload)?;
     }
     if let Some(ref velocities) = molecule.velocities {
         let mut payload = Vec::with_capacity(velocities.len() * 12);
@@ -318,7 +349,7 @@ pub(super) fn serialize_molecule_soa(molecule: &Molecule) -> Result<Vec<u8>> {
             "velocities",
             TYPE_VEC3_F32,
             &payload,
-        );
+        )?;
     }
 
     let mut atom_keys: Vec<&String> = molecule.atom_properties.keys().collect();
@@ -332,7 +363,7 @@ pub(super) fn serialize_molecule_soa(molecule: &Molecule) -> Result<Vec<u8>> {
             key,
             property_value_type_tag(value),
             &payload,
-        );
+        )?;
     }
 
     let mut prop_keys: Vec<&String> = molecule.properties.keys().collect();
@@ -346,7 +377,7 @@ pub(super) fn serialize_molecule_soa(molecule: &Molecule) -> Result<Vec<u8>> {
             key,
             property_value_type_tag(value),
             &payload,
-        );
+        )?;
     }
 
     Ok(buf)

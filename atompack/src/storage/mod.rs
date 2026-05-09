@@ -97,6 +97,19 @@ impl SharedMmapBytes {
     }
 }
 
+/// Convert a record byte length to the on-disk `u32` index field, erroring
+/// instead of silently truncating when the record exceeds 4 GiB.
+fn record_size_u32(len: usize, what: &str) -> Result<u32> {
+    len.try_into().map_err(|_| {
+        Error::InvalidData(format!(
+            "{} size {} bytes exceeds u32::MAX ({}); index field cannot represent it",
+            what,
+            len,
+            u32::MAX
+        ))
+    })
+}
+
 pub struct AtomDatabase {
     path: PathBuf,
     compression: CompressionType,
@@ -344,7 +357,7 @@ impl AtomDatabase {
         let compressed_records: Vec<(Vec<u8>, u32, u32)> = records
             .par_iter()
             .map(|(bytes, num_atoms)| {
-                let uncompressed_size = bytes.len() as u32;
+                let uncompressed_size = record_size_u32(bytes.len(), "uncompressed record")?;
                 let compressed = compress(bytes, compression)?;
                 Ok((compressed, uncompressed_size, *num_atoms))
             })
@@ -361,7 +374,7 @@ impl AtomDatabase {
 
             new_indices.push(MoleculeIndex {
                 offset,
-                compressed_size: compressed_data.len() as u32,
+                compressed_size: record_size_u32(compressed_data.len(), "compressed record")?,
                 uncompressed_size,
                 num_atoms,
             });
@@ -390,7 +403,7 @@ impl AtomDatabase {
         let compressed_records: Vec<(Vec<u8>, u32, u32)> = records
             .into_par_iter()
             .map(|(bytes, num_atoms)| {
-                let uncompressed_size = bytes.len() as u32;
+                let uncompressed_size = record_size_u32(bytes.len(), "uncompressed record")?;
                 let compressed = compress(&bytes, compression)?;
                 Ok((compressed, uncompressed_size, num_atoms))
             })
@@ -406,7 +419,7 @@ impl AtomDatabase {
 
             new_indices.push(MoleculeIndex {
                 offset,
-                compressed_size: compressed_data.len() as u32,
+                compressed_size: record_size_u32(compressed_data.len(), "compressed record")?,
                 uncompressed_size,
                 num_atoms,
             });
