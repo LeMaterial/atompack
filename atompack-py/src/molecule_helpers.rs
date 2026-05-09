@@ -299,6 +299,40 @@ pub(crate) fn parse_vec3_field(
     )))
 }
 
+fn parse_positions_field(value: &Bound<'_, PyAny>) -> PyResult<Vec3Data> {
+    if let Ok(arr) = value.cast::<PyArray2<f32>>() {
+        let readonly = arr.readonly();
+        let view = readonly.as_array();
+        if view.shape().len() != 2 || view.shape()[1] != 3 {
+            return Err(PyValueError::new_err(
+                "positions must have shape (n_atoms, 3)",
+            ));
+        }
+        return Ok(Vec3Data::F32(
+            view.outer_iter()
+                .map(|row| [row[0], row[1], row[2]])
+                .collect(),
+        ));
+    }
+    if let Ok(arr) = value.cast::<PyArray2<f64>>() {
+        let readonly = arr.readonly();
+        let view = readonly.as_array();
+        if view.shape().len() != 2 || view.shape()[1] != 3 {
+            return Err(PyValueError::new_err(
+                "positions must have shape (n_atoms, 3)",
+            ));
+        }
+        return Ok(Vec3Data::F64(
+            view.outer_iter()
+                .map(|row| [row[0], row[1], row[2]])
+                .collect(),
+        ));
+    }
+    Err(PyValueError::new_err(
+        "positions must be a float32 or float64 ndarray with shape (n_atoms, 3)",
+    ))
+}
+
 pub(crate) fn parse_float_array_field(
     value: &Bound<'_, PyAny>,
     label: &str,
@@ -378,7 +412,7 @@ pub(crate) fn molecule_from_numpy_arrays(
     let z = atomic_numbers.readonly();
     let z_arr = z.as_array();
     let atomic_numbers_vec = z_arr.to_vec();
-    let positions = parse_vec3_field(positions, "positions", atomic_numbers_vec.len())?;
+    let positions = parse_positions_field(positions)?;
     molecule_from_positions(positions, atomic_numbers_vec).map_err(PyValueError::new_err)
 }
 

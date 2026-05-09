@@ -296,7 +296,7 @@ impl PyMolecule {
     #[setter]
     fn set_forces(&mut self, py: Python<'_>, forces: Py<PyAny>) -> PyResult<()> {
         let n_atoms = self.len();
-        self.ensure_owned()?.forces = Some(parse_vec3_field(forces.bind(py), "forces", n_atoms)?);
+        self.ensure_owned()?.forces = Some(parse_vec3_field(forces.bind(py), "Forces", n_atoms)?);
         Ok(())
     }
 
@@ -332,7 +332,7 @@ impl PyMolecule {
         let n_atoms = self.len();
         self.ensure_owned()?.charges = Some(parse_float_array_field(
             charges.bind(py),
-            "charges",
+            "Charges",
             n_atoms,
         )?);
         Ok(())
@@ -351,7 +351,7 @@ impl PyMolecule {
         let n_atoms = self.len();
         self.ensure_owned()?.velocities = Some(parse_vec3_field(
             velocities.bind(py),
-            "velocities",
+            "Velocities",
             n_atoms,
         )?);
         Ok(())
@@ -367,7 +367,7 @@ impl PyMolecule {
     /// cell property (setter)
     #[setter]
     fn set_cell(&mut self, py: Python<'_>, cell: Py<PyAny>) -> PyResult<()> {
-        self.ensure_owned()?.cell = Some(parse_mat3_field(cell.bind(py), "cell")?);
+        self.ensure_owned()?.cell = Some(parse_mat3_field(cell.bind(py), "Cell")?);
         Ok(())
     }
 
@@ -382,7 +382,7 @@ impl PyMolecule {
     #[setter]
     fn set_stress(&mut self, py: Python<'_>, stress: Py<PyAny>) -> PyResult<()> {
         let inner = self.ensure_owned()?;
-        inner.stress = Some(parse_mat3_field(stress.bind(py), "stress")?);
+        inner.stress = Some(parse_mat3_field(stress.bind(py), "Stress")?);
         inner.properties.remove("stress");
         Ok(())
     }

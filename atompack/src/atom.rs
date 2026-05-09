@@ -152,6 +152,10 @@ impl FloatArrayData {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn to_f64_vec(&self) -> Vec<f64> {
         match self {
             Self::F32(values) => values.iter().map(|value| *value as f64).collect(),
