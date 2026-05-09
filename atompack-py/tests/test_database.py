@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import pickle
+import zlib
 
 import atompack
 import numpy as np
@@ -61,6 +62,33 @@ def test_database_roundtrip(tmp_path: Path, compression: str) -> None:
 def test_database_rejects_invalid_compression(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match=r"Invalid compression"):
         atompack.Database(str(tmp_path / "bad.atp"), compression="definitely-not-a-codec")
+
+
+def _rewrite_record_format_v2(path: Path) -> None:
+    header_slot_size = 4096
+    for slot_offset in (0, header_slot_size):
+        with path.open("r+b") as handle:
+            handle.seek(slot_offset)
+            slot = bytearray(handle.read(header_slot_size))
+            slot[56:60] = (2).to_bytes(4, "little")
+            checksum = zlib.adler32(slot[:-4]) & 0xFFFFFFFF
+            slot[-4:] = checksum.to_bytes(4, "little")
+            handle.seek(slot_offset)
+            handle.write(slot)
+
+
+def test_database_add_arrays_batch_rejects_v2_incompatible_builtin_dtype(tmp_path: Path) -> None:
+    path = tmp_path / "batch_arrays_v2_compat.atp"
+    atompack.Database(str(path))
+    _rewrite_record_format_v2(path)
+
+    db = atompack.Database.open(str(path))
+    positions = np.array([[[0.0, 0.0, 0.0]]], dtype=np.float32)
+    atomic_numbers = np.array([[6]], dtype=np.uint8)
+    cell = np.eye(3, dtype=np.float32)[None, ...]
+
+    with pytest.raises(ValueError, match="record format 2 does not support float32 cell"):
+        db.add_arrays_batch(positions, atomic_numbers, cell=cell)
 
 
 def test_database_roundtrip_from_arrays_with_builtins(tmp_path: Path) -> None:

@@ -35,14 +35,16 @@ use std::sync::Arc;
 
 mod header;
 mod index;
+mod schema;
 mod soa;
 
 use self::header::{Header, encode_header_slot, read_best_header};
 use self::index::{IndexStorage, MoleculeIndex, decode_index, encode_index};
-use self::soa::{
-    SchemaLock, arr, decode_schema_lock, deserialize_molecule_soa, encode_schema_lock,
-    merge_schema_lock, record_schema, schema_from_molecule, serialize_molecule_soa,
+use self::schema::{
+    SchemaLock, decode_schema_lock, encode_schema_lock, merge_schema_lock, record_schema,
+    schema_from_molecule,
 };
+use self::soa::{arr, deserialize_molecule_soa, serialize_molecule_soa};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -762,6 +764,41 @@ mod tests {
     use crate::{Atom, FloatArrayData, FloatScalarData, Mat3Data, Vec3Data};
     use tempfile::NamedTempFile;
 
+    fn adler32_for_test(bytes: &[u8]) -> u32 {
+        const MOD_ADLER: u32 = 65_521;
+        let mut a: u32 = 1;
+        let mut b: u32 = 0;
+        for &byte in bytes {
+            a = (a + (byte as u32)) % MOD_ADLER;
+            b = (b + a) % MOD_ADLER;
+        }
+        (b << 16) | a
+    }
+
+    fn encode_legacy_v2_header_slot(header: Header) -> [u8; HEADER_SLOT_SIZE] {
+        let mut slot = [0u8; HEADER_SLOT_SIZE];
+        slot[0..4].copy_from_slice(MAGIC);
+        slot[4..8].copy_from_slice(&FILE_FORMAT_VERSION.to_le_bytes());
+        slot[8..16].copy_from_slice(&header.generation.to_le_bytes());
+        slot[16..24].copy_from_slice(&header.data_start.to_le_bytes());
+        slot[24..32].copy_from_slice(&header.index_offset.to_le_bytes());
+        slot[32..40].copy_from_slice(&header.index_len.to_le_bytes());
+        slot[40..48].copy_from_slice(&header.num_molecules.to_le_bytes());
+
+        let (compression_type, compression_level) = match header.compression {
+            CompressionType::None => (0u8, 0i32),
+            CompressionType::Lz4 => (1u8, 0i32),
+            CompressionType::Zstd(level) => (2u8, level),
+        };
+        slot[48] = compression_type;
+        slot[52..56].copy_from_slice(&compression_level.to_le_bytes());
+        slot[56..60].copy_from_slice(&header.record_format.to_le_bytes());
+
+        let checksum = adler32_for_test(&slot[..HEADER_SLOT_SIZE - 4]);
+        slot[HEADER_SLOT_SIZE - 4..HEADER_SLOT_SIZE].copy_from_slice(&checksum.to_le_bytes());
+        slot
+    }
+
     fn molecule_from_atoms(atoms: Vec<Atom>) -> Molecule {
         Molecule::from_atoms(atoms)
     }
@@ -814,6 +851,35 @@ mod tests {
             let mol = db.get_molecule(0).unwrap();
             assert_eq!(mol.atom(0).unwrap().position(), [1.0, 2.0, 3.0]);
         }
+    }
+
+    #[test]
+    fn test_database_open_legacy_v2_header_layout() {
+        let temp = NamedTempFile::new().unwrap();
+        let path = temp.path().to_path_buf();
+
+        let header = Header {
+            generation: 0,
+            data_start: HEADER_REGION_SIZE,
+            num_molecules: 0,
+            compression: CompressionType::None,
+            record_format: RECORD_FORMAT_SOA_V2,
+            schema_offset: 0,
+            schema_len: 0,
+            index_offset: 0,
+            index_len: 0,
+        };
+        let slot = encode_legacy_v2_header_slot(header);
+        let mut file = File::create(&path).unwrap();
+        file.write_all(&slot).unwrap();
+        file.write_all(&slot).unwrap();
+        file.flush().unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+
+        let db = AtomDatabase::open(&path).unwrap();
+        assert_eq!(db.len(), 0);
+        assert_eq!(db.record_format(), RECORD_FORMAT_SOA_V2);
     }
 
     #[test]
@@ -1226,6 +1292,31 @@ mod tests {
         db.add_molecule(&mol1).unwrap();
         let err = db.add_molecule(&mol2).unwrap_err();
         assert!(format!("{}", err).contains("Schema mismatch for section 'spectrum'"));
+    }
+
+    #[test]
+    fn test_add_owned_soa_records_rejects_v2_incompatible_builtin_dtype() {
+        let temp = NamedTempFile::new().unwrap();
+        let path = temp.path().to_path_buf();
+        let mut db = AtomDatabase::create(&path, CompressionType::None).unwrap();
+        db.record_format = RECORD_FORMAT_SOA_V2;
+
+        let mut mol = molecule_from_atoms(vec![Atom::new(0.0, 0.0, 0.0, 6)]);
+        mol.cell = Some(Mat3Data::F32([
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ]));
+
+        let bytes = serialize_molecule_soa(&mol, RECORD_FORMAT_SOA_V3).unwrap();
+        let err = db
+            .add_owned_soa_records(vec![(bytes, mol.len() as u32, TYPE_VEC3_F32)])
+            .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("record format 2 does not support float32 cell")
+        );
     }
 
     #[test]
