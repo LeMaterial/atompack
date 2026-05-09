@@ -1,5 +1,11 @@
 # Atompack
 
+<p align="center">
+  <a href="https://codecov.io/gh/LeMaterial/atompack">
+    <img alt="Codecov" src="https://codecov.io/gh/LeMaterial/atompack/branch/main/graph/badge.svg">
+  </a>
+</p>
+
 Append-only molecule storage for atomistic ML datasets.
 
 Atompack is a Python package plus Rust core crate for writing, reading, and distributing molecular
@@ -135,29 +141,6 @@ uv run --extra dev --locked ruff check python
 uv run --extra dev --locked --with "maturin>=1.4,<2.0" maturin develop
 uv run --extra dev --locked pytest
 ```
-
-### Coverage
-
-Pull requests run an automated coverage job in GitHub Actions. That job:
-
-- runs Python coverage with `pytest-cov`
-- runs Rust coverage with `cargo-llvm-cov`
-- uploads the raw reports as workflow artifacts
-- refreshes a sticky PR comment with the current Python and Rust line coverage
-
-For local runs, use the repo targets:
-
-```bash
-make py-coverage
-make rust-coverage
-make coverage
-```
-
-`make py-coverage` writes XML and HTML reports under `atompack-py/coverage/`. `make rust-coverage`
-writes an LCOV report to `coverage/rust.lcov`.
-
-In practice, the useful split here is to track both reports: Python coverage for the public API and
-integration paths, Rust coverage for the storage and serialization core.
 
 Rust entrypoints:
 

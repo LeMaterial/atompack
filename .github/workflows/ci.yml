@@ -61,14 +61,13 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     needs:
       - rust
       - python
     permissions:
       contents: read
-      issues: write
-      pull-requests: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -101,13 +100,22 @@ jobs:
       - name: Run Rust coverage
         run: make rust-coverage
 
-      - name: Build coverage summary
-        run: |
-          uv run --project atompack-py --no-sync python .github/scripts/coverage_summary.py \
-            --python-xml atompack-py/coverage/python-coverage.xml \
-            --rust-lcov coverage/rust.lcov \
-            --output coverage/summary.md
-          cat coverage/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload to Codecov (pull requests)
+        if: github.event_name == 'pull_request'
+        uses: codecov/codecov-action@v5
+        with:
+          files: atompack-py/coverage/python-coverage.xml,coverage/rust.lcov
+          fail_ci_if_error: true
+          verbose: true
+
+      - name: Upload to Codecov (pushes)
+        if: github.event_name == 'push'
+        uses: codecov/codecov-action@v5
+        with:
+          files: atompack-py/coverage/python-coverage.xml,coverage/rust.lcov
+          fail_ci_if_error: true
+          use_oidc: true
+          verbose: true
 
       - name: Upload coverage artifacts
         uses: actions/upload-artifact@v4
@@ -116,40 +124,3 @@ jobs:
           path: |
             atompack-py/coverage
             coverage
-
-      - name: Update pull request coverage comment
-        if: github.event.pull_request.head.repo.full_name == github.repository
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require("fs");
-            const marker = "<!-- atompack-coverage-report -->";
-            const body = `${marker}\n${fs.readFileSync("coverage/summary.md", "utf8")}`;
-            const { owner, repo } = context.repo;
-            const issue_number = context.issue.number;
-
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner,
-              repo,
-              issue_number,
-            });
-
-            const existing = comments.find((comment) =>
-              comment.user.type === "Bot" && comment.body.includes(marker)
-            );
-
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner,
-                repo,
-                comment_id: existing.id,
-                body,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner,
-                repo,
-                issue_number,
-                body,
-              });
-            }
