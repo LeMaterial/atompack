@@ -4,7 +4,7 @@
 //! This module exposes the atompack library to Python using PyO3.
 
 #![allow(clippy::useless_conversion)]
-// PyO3 0.22 macro-generated code triggers this lint; safe to suppress until PyO3 upgrade.
+// PyO3 0.26 macro-generated code triggers this lint; safe to suppress.
 #![allow(unsafe_op_in_unsafe_fn)]
 
 use atompack::{

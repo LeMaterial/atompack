@@ -107,7 +107,7 @@ class Molecule:
     >>> import numpy as np
     >>> positions = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32)
     >>> atomic_numbers = np.array([6, 8], dtype=np.uint8)
-    >>> mol = Molecule(positions, atomic_numbers)
+    >>> mol = Molecule.from_arrays(positions, atomic_numbers)
     >>> mol.energy = -100.5
     >>> mol.forces = np.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]], dtype=np.float32)
     >>> print(len(mol))  # 2
@@ -433,7 +433,7 @@ class Database:
     --------
     Create and write molecules:
 
-    >>> db = Database("molecules.atp")
+    >>> db = Database("molecules.atp", overwrite=True)
     >>> db.add_molecule(mol1)
     >>> db.add_molecule(mol2)
     >>> db.flush()

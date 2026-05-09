@@ -20,9 +20,10 @@ files or shard directories.
 ## Installation
 
 ```bash
-pip install atompack
+pip install atompack-db
 ```
 
+The package is imported as `atompack` after installation.
 Hugging Face support ships in the base package.
 
 ### Install from source
@@ -102,8 +103,6 @@ strong batch-write throughput, and storage efficiency that stays close to compac
 formats.
 
 For the benchmark narrative and current figures, see the
-[release blog post](https://entalpic-atompack.readthedocs-hosted.com/en/latest/blog/atompack-release.html)
-and
 [performance docs](https://entalpic-atompack.readthedocs-hosted.com/en/latest/performance.html).
 
 ## Documentation
