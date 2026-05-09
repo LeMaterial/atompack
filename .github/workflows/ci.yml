@@ -67,7 +67,8 @@ jobs:
       - python
     permissions:
       contents: read
-      id-token: write
+    env:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -100,22 +101,20 @@ jobs:
       - name: Run Rust coverage
         run: make rust-coverage
 
-      - name: Upload to Codecov (pull requests)
-        if: github.event_name == 'pull_request'
+      - name: Upload to Codecov
+        if: env.CODECOV_TOKEN != ''
         uses: codecov/codecov-action@v5
+        env:
+          CODECOV_TOKEN: ${{ env.CODECOV_TOKEN }}
         with:
           files: atompack-py/coverage/python-coverage.xml,coverage/rust.lcov
+          disable_search: true
           fail_ci_if_error: true
           verbose: true
 
-      - name: Upload to Codecov (pushes)
-        if: github.event_name == 'push'
-        uses: codecov/codecov-action@v5
-        with:
-          files: atompack-py/coverage/python-coverage.xml,coverage/rust.lcov
-          fail_ci_if_error: true
-          use_oidc: true
-          verbose: true
+      - name: Skip Codecov upload when token is not configured
+        if: env.CODECOV_TOKEN == ''
+        run: echo "Skipping Codecov upload because CODECOV_TOKEN is not configured."
 
       - name: Upload coverage artifacts
         uses: actions/upload-artifact@v4
