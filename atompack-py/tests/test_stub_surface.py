@@ -72,7 +72,7 @@ def test_private_stub_tracks_low_level_surface() -> None:
 
 def test_public_stub_exposes_flat_batch_reader() -> None:
     database_methods = _class_method_names(PUBLIC_STUB, "Database")
-    assert "get_molecules_flat" in database_methods
+    assert {"get_molecules_flat", "iter_batches"} <= database_methods
 
 
 def test_hub_stub_has_public_docstrings() -> None:

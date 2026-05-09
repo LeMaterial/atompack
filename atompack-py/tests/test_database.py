@@ -324,6 +324,37 @@ def test_database_add_arrays_batch_promotes_to_float64_geometry_when_needed(
     assert flat["forces"].dtype == np.float64
 
 
+def test_database_iter_batches_supports_object_and_flat_batches(tmp_path: Path) -> None:
+    path = tmp_path / "iter_batches.atp"
+    db = atompack.Database(str(path))
+    db.add_molecules(
+        [
+            _make_molecule(-1.0),
+            _make_molecule(-2.0),
+            _make_molecule(-3.0),
+            _make_molecule(-4.0),
+            _make_molecule(-5.0),
+        ]
+    )
+    db.flush()
+
+    reopened = atompack.Database.open(str(path))
+    object_batches = list(reopened.iter_batches(2))
+    assert [[m.energy for m in batch] for batch in object_batches] == [
+        [-1.0, -2.0],
+        [-3.0, -4.0],
+        [-5.0],
+    ]
+
+    flat_batches = list(reopened.iter_batches(2, flat=True, drop_last=True))
+    assert len(flat_batches) == 2
+    np.testing.assert_allclose(flat_batches[0]["energy"], np.array([-1.0, -2.0]))
+    np.testing.assert_allclose(flat_batches[1]["energy"], np.array([-3.0, -4.0]))
+
+    with pytest.raises(ValueError, match="positive"):
+        list(reopened.iter_batches(0))
+
+
 @pytest.mark.parametrize("mmap", [False, True])
 @pytest.mark.parametrize("compression", ["none", "lz4", "zstd"])
 def test_database_single_item_reads_are_view_compatible(
