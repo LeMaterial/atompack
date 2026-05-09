@@ -39,6 +39,31 @@ impl PyAtomDatabase {
         SoaMoleculeView::from_owned_bytes(decompressed, ctx)
     }
 
+    fn normalize_index(&self, index: isize) -> PyResult<usize> {
+        let len = self.inner.len();
+        let normalized = if index < 0 {
+            (len as isize)
+                .checked_add(index)
+                .ok_or_else(|| PyIndexError::new_err("index underflow"))?
+        } else {
+            index
+        };
+        if normalized < 0 || normalized >= len as isize {
+            return Err(PyIndexError::new_err(format!(
+                "Index {} out of bounds for database of length {}",
+                index, len
+            )));
+        }
+        Ok(normalized as usize)
+    }
+
+    fn normalize_indices(&self, indices: Vec<isize>) -> PyResult<Vec<usize>> {
+        indices
+            .into_iter()
+            .map(|index| self.normalize_index(index))
+            .collect()
+    }
+
     fn single_molecule_view(&self, py: Python<'_>, index: usize) -> PyResult<SoaMoleculeView> {
         let compression = self.inner.compression();
         let ctx = self.soa_context()?;
@@ -273,15 +298,9 @@ impl PyAtomDatabase {
     }
 
     /// Get a molecule by index as a lazy view-backed molecule.
-    fn get_molecule(&self, py: Python<'_>, index: usize) -> PyResult<PyMolecule> {
-        let len = self.inner.len();
-        if index >= len {
-            return Err(PyIndexError::new_err(format!(
-                "Index {} out of bounds for database of length {}",
-                index, len
-            )));
-        }
-        Ok(PyMolecule::from_view(self.single_molecule_view(py, index)?))
+    fn get_molecule(&self, py: Python<'_>, index: isize) -> PyResult<PyMolecule> {
+        let normalized = self.normalize_index(index)?;
+        Ok(PyMolecule::from_view(self.single_molecule_view(py, normalized)?))
     }
 
     /// Get multiple molecules by indices (parallel batch reading)
@@ -294,10 +313,11 @@ impl PyAtomDatabase {
     ///
     /// Returns:
     /// - List of molecules
-    fn get_molecules(&self, py: Python<'_>, indices: Vec<usize>) -> PyResult<Vec<PyMolecule>> {
+    fn get_molecules(&self, py: Python<'_>, indices: Vec<isize>) -> PyResult<Vec<PyMolecule>> {
         if indices.is_empty() {
             return Ok(Vec::new());
         }
+        let indices = self.normalize_indices(indices)?;
         let views = self.molecule_views(py, indices)?;
         Ok(views.into_iter().map(PyMolecule::from_view).collect())
     }
@@ -327,8 +347,9 @@ impl PyAtomDatabase {
     fn get_molecules_flat<'py>(
         &self,
         py: Python<'py>,
-        indices: Vec<usize>,
+        indices: Vec<isize>,
     ) -> PyResult<Bound<'py, PyDict>> {
+        let indices = self.normalize_indices(indices)?;
         flat::get_molecules_flat_soa_impl(&self.inner, py, indices)
     }
 
@@ -338,7 +359,7 @@ impl PyAtomDatabase {
     }
 
     /// Enable indexing: db[i]
-    fn __getitem__(&self, py: Python<'_>, index: usize) -> PyResult<PyMolecule> {
+    fn __getitem__(&self, py: Python<'_>, index: isize) -> PyResult<PyMolecule> {
         self.get_molecule(py, index)
     }
 

@@ -538,7 +538,7 @@ class Database:
         Parameters
         ----------
         index : int
-            Molecule index (0-based)
+            Molecule index (0-based). Negative indices are supported.
 
         Returns
         -------
@@ -553,7 +553,7 @@ class Database:
         Parameters
         ----------
         indices : list of int
-            Molecule indices (0-based)
+            Molecule indices (0-based). Negative indices are supported.
 
         Returns
         -------
@@ -612,7 +612,7 @@ class Database:
         Parameters
         ----------
         index : int
-            Molecule index (0-based)
+            Molecule index (0-based). Negative indices are supported.
 
         Returns
         -------
