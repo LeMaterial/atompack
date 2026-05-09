@@ -19,6 +19,22 @@ struct Metrics {
     file_size_bytes: u64,
 }
 
+#[derive(Clone, Copy)]
+struct Threshold {
+    label: &'static str,
+    env: &'static str,
+    default: f64,
+}
+
+impl Threshold {
+    fn value(self) -> f64 {
+        std::env::var(self.env)
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(self.default)
+    }
+}
+
 struct XorShift64 {
     state: u64,
 }
@@ -42,15 +58,105 @@ impl XorShift64 {
     }
 }
 
-fn env_threshold(name: &str, default: f64) -> f64 {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(default)
-}
-
 fn rate(units: usize, elapsed: Duration) -> f64 {
     units as f64 / elapsed.as_secs_f64().max(f64::EPSILON)
+}
+
+fn color(code: &str, text: impl AsRef<str>) -> String {
+    let enabled = match std::env::var("ATOMPACK_PERF_COLOR").as_deref() {
+        Ok("always") => true,
+        Ok("never") => false,
+        _ => std::env::var_os("NO_COLOR").is_none(),
+    };
+    if enabled {
+        format!("\x1b[{code}m{}\x1b[0m", text.as_ref())
+    } else {
+        text.as_ref().to_string()
+    }
+}
+
+fn cyan(text: impl AsRef<str>) -> String {
+    color("36;1", text)
+}
+
+fn green(text: impl AsRef<str>) -> String {
+    color("32;1", text)
+}
+
+fn red(text: impl AsRef<str>) -> String {
+    color("31;1", text)
+}
+
+fn yellow(text: impl AsRef<str>) -> String {
+    color("33;1", text)
+}
+
+fn format_rate(value: f64) -> String {
+    let mut digits = format!("{:.0}", value);
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    while digits.len() > 3 {
+        let tail = digits.split_off(digits.len() - 3);
+        if grouped.is_empty() {
+            grouped = tail;
+        } else {
+            grouped = format!("{tail},{grouped}");
+        }
+    }
+    if grouped.is_empty() {
+        grouped = digits;
+    } else {
+        grouped = format!("{digits},{grouped}");
+    }
+    format!("{grouped:>12}")
+}
+
+fn print_metric(label: &str, value: f64, threshold: Threshold) {
+    let floor = threshold.value();
+    let passed = value >= floor;
+    let status = if passed { green("PASS") } else { red("FAIL") };
+    println!(
+        "  {label:<22} {mol_s} mol/s  {atoms_s} atoms/s  min {floor_s}  {status:<13} {env}",
+        mol_s = format_rate(value),
+        atoms_s = format_rate(value * ATOMS_PER_MOLECULE as f64),
+        floor_s = format_rate(floor),
+        env = threshold.env,
+    );
+}
+
+fn print_report(metrics: Metrics, thresholds: &[Threshold]) {
+    println!();
+    println!("{}", cyan("Atompack Rust Throughput Smoke"));
+    println!(
+        "  dataset: {} molecules x {} atoms, compression=none, props=energy+forces",
+        N_MOLECULES, ATOMS_PER_MOLECULE
+    );
+    println!(
+        "  reads: random_reads={}, shuffled_batch_reads={}, read_batch={}, file_size={} bytes",
+        RANDOM_READS, SHUFFLE_READS, READ_BATCH, metrics.file_size_bytes
+    );
+    println!(
+        "  {}",
+        yellow("small warm-cache smoke test; not a publication benchmark")
+    );
+    println!();
+    println!(
+        "  {metric:<22} {mol_s:>18}  {atoms_s:>18}  {floor:>16}  {status:<13} env override",
+        metric = "metric",
+        mol_s = "throughput",
+        atoms_s = "atom throughput",
+        floor = "floor",
+        status = "status",
+    );
+    println!("  {}", "-".repeat(103));
+    print_metric("write", metrics.write_mol_s, thresholds[0]);
+    print_metric("sequential read", metrics.seq_read_mol_s, thresholds[1]);
+    print_metric("random read", metrics.rand_read_mol_s, thresholds[2]);
+    print_metric(
+        "shuffled batch read",
+        metrics.shuffle_read_mol_s,
+        thresholds[3],
+    );
+    println!();
 }
 
 fn synthetic_molecule(id: usize) -> Molecule {
@@ -162,6 +268,28 @@ fn run_smoke() -> atompack::Result<Metrics> {
 #[ignore = "run with `make perf-smoke-rust` so throughput is measured in release mode"]
 fn atompack_rust_throughput_smoke() -> atompack::Result<()> {
     let metrics = run_smoke()?;
+    let thresholds = [
+        Threshold {
+            label: "Rust write",
+            env: "ATOMPACK_RUST_MIN_WRITE_MOL_S",
+            default: 25_000.0,
+        },
+        Threshold {
+            label: "Rust sequential read",
+            env: "ATOMPACK_RUST_MIN_SEQ_READ_MOL_S",
+            default: 75_000.0,
+        },
+        Threshold {
+            label: "Rust random read",
+            env: "ATOMPACK_RUST_MIN_RAND_READ_MOL_S",
+            default: 50_000.0,
+        },
+        Threshold {
+            label: "Rust shuffled batch read",
+            env: "ATOMPACK_RUST_MIN_SHUFFLE_READ_MOL_S",
+            default: 50_000.0,
+        },
+    ];
 
     println!(
         "atompack_rust_perf_smoke n_molecules={} atoms_per_molecule={} \
@@ -175,26 +303,30 @@ fn atompack_rust_throughput_smoke() -> atompack::Result<()> {
         metrics.shuffle_read_mol_s,
         metrics.file_size_bytes,
     );
+    print_report(metrics, &thresholds);
 
     assert!(
-        metrics.write_mol_s >= env_threshold("ATOMPACK_RUST_MIN_WRITE_MOL_S", 25_000.0),
-        "Rust write throughput regressed: {:.0} mol/s",
+        metrics.write_mol_s >= thresholds[0].value(),
+        "{} throughput regressed: {:.0} mol/s",
+        thresholds[0].label,
         metrics.write_mol_s
     );
     assert!(
-        metrics.seq_read_mol_s >= env_threshold("ATOMPACK_RUST_MIN_SEQ_READ_MOL_S", 75_000.0),
-        "Rust sequential read throughput regressed: {:.0} mol/s",
+        metrics.seq_read_mol_s >= thresholds[1].value(),
+        "{} throughput regressed: {:.0} mol/s",
+        thresholds[1].label,
         metrics.seq_read_mol_s
     );
     assert!(
-        metrics.rand_read_mol_s >= env_threshold("ATOMPACK_RUST_MIN_RAND_READ_MOL_S", 50_000.0),
-        "Rust random read throughput regressed: {:.0} mol/s",
+        metrics.rand_read_mol_s >= thresholds[2].value(),
+        "{} throughput regressed: {:.0} mol/s",
+        thresholds[2].label,
         metrics.rand_read_mol_s
     );
     assert!(
-        metrics.shuffle_read_mol_s
-            >= env_threshold("ATOMPACK_RUST_MIN_SHUFFLE_READ_MOL_S", 50_000.0),
-        "Rust shuffled batch read throughput regressed: {:.0} mol/s",
+        metrics.shuffle_read_mol_s >= thresholds[3].value(),
+        "{} throughput regressed: {:.0} mol/s",
+        thresholds[3].label,
         metrics.shuffle_read_mol_s
     );
 

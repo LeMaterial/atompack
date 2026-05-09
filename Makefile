@@ -2,6 +2,7 @@ SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 
 UV ?= uv
+ATOMPACK_PERF_COLOR ?= always
 # Force a repo-local uv cache so builds work in restricted environments (e.g. CI sandboxes).
 override UV_CACHE_DIR := $(CURDIR)/.uv-cache
 
@@ -87,11 +88,11 @@ py-test-benchmarks: py-dev
 	cd atompack-py && UV_CACHE_DIR=$(UV_CACHE_DIR) $(UV) run --extra dev --locked pytest tests/benchmarks
 
 perf-smoke-rust:
-	cargo test --release -p atompack --test throughput_smoke -- --ignored --nocapture
+	ATOMPACK_PERF_COLOR=$(ATOMPACK_PERF_COLOR) cargo test --release -p atompack --test throughput_smoke -- --ignored --nocapture
 
 perf-smoke-py: py-dev-release
 	@command -v $(UV) >/dev/null 2>&1 || (echo "uv not found; install from https://docs.astral.sh/uv/" && exit 1)
-	cd atompack-py && ATOMPACK_RUN_PERF_SMOKE=1 UV_CACHE_DIR=$(UV_CACHE_DIR) $(UV) run --no-sync --extra dev --locked pytest tests/test_throughput_smoke.py -q -s -m perf
+	cd atompack-py && ATOMPACK_PERF_COLOR=$(ATOMPACK_PERF_COLOR) ATOMPACK_RUN_PERF_SMOKE=1 UV_CACHE_DIR=$(UV_CACHE_DIR) $(UV) run --no-sync --extra dev --locked pytest tests/test_throughput_smoke.py -q -s -m perf
 
 perf-smoke: perf-smoke-rust perf-smoke-py
 

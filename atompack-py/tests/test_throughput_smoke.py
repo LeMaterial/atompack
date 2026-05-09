@@ -23,12 +23,100 @@ ATOMS_PER_MOLECULE = int(os.environ.get("ATOMPACK_PY_PERF_ATOMS_PER_MOLECULE", "
 READ_SAMPLE = int(os.environ.get("ATOMPACK_PY_PERF_READ_SAMPLE", "5000"))
 
 
+def _color(code: str, text: str) -> str:
+    color_mode = os.environ.get("ATOMPACK_PERF_COLOR", "auto")
+    if color_mode == "always":
+        return f"\033[{code}m{text}\033[0m"
+    if color_mode == "never" or os.environ.get("NO_COLOR"):
+        return text
+    return f"\033[{code}m{text}\033[0m"
+
+
+def _cyan(text: str) -> str:
+    return _color("36;1", text)
+
+
+def _green(text: str) -> str:
+    return _color("32;1", text)
+
+
+def _red(text: str) -> str:
+    return _color("31;1", text)
+
+
+def _yellow(text: str) -> str:
+    return _color("33;1", text)
+
+
 def _threshold(name: str, default: float) -> float:
     return float(os.environ.get(name, default))
 
 
 def _rate(units: int, seconds: float) -> float:
     return units / max(seconds, 1e-12)
+
+
+def _format_rate(value: float) -> str:
+    return f"{value:>12,.0f}"
+
+
+def _print_metric(label: str, value: float, threshold_env: str, default: float) -> None:
+    floor = _threshold(threshold_env, default)
+    status = _green("PASS") if value >= floor else _red("FAIL")
+    print(
+        f"  {label:<24} "
+        f"{_format_rate(value)} mol/s  "
+        f"{_format_rate(value * ATOMS_PER_MOLECULE)} atoms/s  "
+        f"min {_format_rate(floor)}  "
+        f"{status:<13} {threshold_env}"
+    )
+
+
+def _print_report(
+    *,
+    write_mol_s: float,
+    sequential_read_mol_s: float,
+    shuffled_read_mol_s: float,
+    flat_read_mol_s: float,
+    read_sample: int,
+    file_size_bytes: int,
+) -> None:
+    print()
+    print(_cyan("Atompack Python Throughput Smoke"))
+    print(
+        f"  dataset: {N_MOLECULES:,} molecules x {ATOMS_PER_MOLECULE} atoms, "
+        "compression=none, props=builtin+custom"
+    )
+    print(
+        f"  reads: sample={read_sample:,}, file_size={file_size_bytes:,} bytes, extension=release"
+    )
+    print(f"  {_yellow('small warm-cache smoke test; not a publication benchmark')}")
+    print()
+    print(
+        f"  {'metric':<24} {'throughput':>18}  {'atom throughput':>18}  "
+        f"{'floor':>16}  {'status':<13} env override"
+    )
+    print(f"  {'-' * 105}")
+    _print_metric("write add_arrays_batch", write_mol_s, "ATOMPACK_PY_MIN_WRITE_MOL_S", 10_000.0)
+    _print_metric(
+        "sequential get_molecule",
+        sequential_read_mol_s,
+        "ATOMPACK_PY_MIN_SEQUENTIAL_READ_MOL_S",
+        50_000.0,
+    )
+    _print_metric(
+        "shuffled get_molecule",
+        shuffled_read_mol_s,
+        "ATOMPACK_PY_MIN_SHUFFLED_READ_MOL_S",
+        50_000.0,
+    )
+    _print_metric(
+        "flat get_molecules_flat",
+        flat_read_mol_s,
+        "ATOMPACK_PY_MIN_FLAT_READ_MOL_S",
+        50_000.0,
+    )
+    print()
 
 
 def _measure_repeated(
@@ -170,6 +258,14 @@ def test_atompack_python_throughput_smoke(tmp_path: Path) -> None:
         f"shuffled_read_mol_s={shuffled_read_mol_s:.0f} "
         f"flat_read_mol_s={flat_read_mol_s:.0f} "
         f"file_size_bytes={file_size_bytes}"
+    )
+    _print_report(
+        write_mol_s=write_mol_s,
+        sequential_read_mol_s=sequential_read_mol_s,
+        shuffled_read_mol_s=shuffled_read_mol_s,
+        flat_read_mol_s=flat_read_mol_s,
+        read_sample=len(seq_indices),
+        file_size_bytes=file_size_bytes,
     )
 
     assert write_mol_s >= _threshold("ATOMPACK_PY_MIN_WRITE_MOL_S", 10_000.0)

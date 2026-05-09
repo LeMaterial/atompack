@@ -47,8 +47,9 @@ batch reads, Python bindings, or ingestion performance:
    make perf-smoke-py     # Python integration smoke test only
 
 These tests use a small 64-atom synthetic dataset and are designed to finish quickly, usually well
-under one minute on a warm development machine. They print write, sequential-read, shuffled-read,
-and Python flat-batch throughput numbers, then compare them against conservative regression floors.
+under one minute on a warm development machine. They print a color-coded summary table with write,
+sequential-read, shuffled-read, and Python flat-batch throughput numbers, then compare them against
+conservative regression floors.
 
 Treat these numbers as smoke-test telemetry, not as publication benchmark results. The figures in
 :doc:`performance` come from larger benchmark scripts with explicit baselines, filesystem context,
@@ -61,6 +62,9 @@ The failure floors can be overridden when running on unusually small or large ma
 
    ATOMPACK_RUST_MIN_SEQ_READ_MOL_S=100000 make perf-smoke-rust
    ATOMPACK_PY_MIN_SHUFFLED_READ_MOL_S=100000 make perf-smoke-py
+
+The make targets default to color with ``ATOMPACK_PERF_COLOR=always``. Run
+``make ATOMPACK_PERF_COLOR=never perf-smoke`` when you need plain text logs.
 
 Docs
 ----
