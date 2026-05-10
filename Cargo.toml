@@ -3,10 +3,11 @@ members = ["atompack", "atompack-py"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 authors = [
     "Ali Ramlaoui <ali.ramlaoui@entalpic.ai>",
+    "Daniel Speckhard <daniel.speckhard@entalpic.ai>",
     "Victor Schmidt <victor.schmidt@entalpic.ai>",
 ]
 license = "Apache-2.0"
