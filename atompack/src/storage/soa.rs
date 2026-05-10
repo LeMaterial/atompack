@@ -25,6 +25,19 @@ pub(super) fn property_value_type_tag(value: &PropertyValue) -> u8 {
     }
 }
 
+fn property_value_payload_len(value: &PropertyValue) -> usize {
+    match value {
+        PropertyValue::Float(_) | PropertyValue::Int(_) => 8,
+        PropertyValue::String(value) => value.len(),
+        PropertyValue::FloatArray(values) => values.len() * 8,
+        PropertyValue::Vec3Array(values) => values.len() * 12,
+        PropertyValue::IntArray(values) => values.len() * 8,
+        PropertyValue::Float32Array(values) => values.len() * 4,
+        PropertyValue::Vec3ArrayF64(values) => values.len() * 24,
+        PropertyValue::Int32Array(values) => values.len() * 4,
+    }
+}
+
 fn extend_f64(b: &mut Vec<u8>, v: &[f64]) {
     for x in v {
         b.extend_from_slice(&f64::to_le_bytes(*x));
@@ -192,18 +205,44 @@ pub(super) fn decode_mat3x3_f64(payload: &[u8]) -> Result<[[f64; 3]; 3]> {
 fn write_vec3_section(buf: &mut Vec<u8>, key: &str, values: &Vec3Data) {
     match values {
         Vec3Data::F32(values) => {
-            let mut payload = Vec::with_capacity(values.len() * 12);
-            for value in values {
-                extend_f32(&mut payload, value);
+            #[cfg(target_endian = "little")]
+            {
+                write_section(
+                    buf,
+                    KIND_BUILTIN,
+                    key,
+                    TYPE_VEC3_F32,
+                    bytemuck::cast_slice::<[f32; 3], u8>(values),
+                );
             }
-            write_section(buf, KIND_BUILTIN, key, TYPE_VEC3_F32, &payload);
+            #[cfg(not(target_endian = "little"))]
+            {
+                let mut payload = Vec::with_capacity(values.len() * 12);
+                for value in values {
+                    extend_f32(&mut payload, value);
+                }
+                write_section(buf, KIND_BUILTIN, key, TYPE_VEC3_F32, &payload);
+            }
         }
         Vec3Data::F64(values) => {
-            let mut payload = Vec::with_capacity(values.len() * 24);
-            for value in values {
-                extend_f64(&mut payload, value);
+            #[cfg(target_endian = "little")]
+            {
+                write_section(
+                    buf,
+                    KIND_BUILTIN,
+                    key,
+                    TYPE_VEC3_F64,
+                    bytemuck::cast_slice::<[f64; 3], u8>(values),
+                );
             }
-            write_section(buf, KIND_BUILTIN, key, TYPE_VEC3_F64, &payload);
+            #[cfg(not(target_endian = "little"))]
+            {
+                let mut payload = Vec::with_capacity(values.len() * 24);
+                for value in values {
+                    extend_f64(&mut payload, value);
+                }
+                write_section(buf, KIND_BUILTIN, key, TYPE_VEC3_F64, &payload);
+            }
         }
     }
 }
@@ -211,14 +250,40 @@ fn write_vec3_section(buf: &mut Vec<u8>, key: &str, values: &Vec3Data) {
 fn write_float_array_section(buf: &mut Vec<u8>, key: &str, values: &FloatArrayData) {
     match values {
         FloatArrayData::F32(values) => {
-            let mut payload = Vec::with_capacity(values.len() * 4);
-            extend_f32(&mut payload, values);
-            write_section(buf, KIND_BUILTIN, key, TYPE_F32_ARRAY, &payload);
+            #[cfg(target_endian = "little")]
+            {
+                write_section(
+                    buf,
+                    KIND_BUILTIN,
+                    key,
+                    TYPE_F32_ARRAY,
+                    bytemuck::cast_slice::<f32, u8>(values),
+                );
+            }
+            #[cfg(not(target_endian = "little"))]
+            {
+                let mut payload = Vec::with_capacity(values.len() * 4);
+                extend_f32(&mut payload, values);
+                write_section(buf, KIND_BUILTIN, key, TYPE_F32_ARRAY, &payload);
+            }
         }
         FloatArrayData::F64(values) => {
-            let mut payload = Vec::with_capacity(values.len() * 8);
-            extend_f64(&mut payload, values);
-            write_section(buf, KIND_BUILTIN, key, TYPE_F64_ARRAY, &payload);
+            #[cfg(target_endian = "little")]
+            {
+                write_section(
+                    buf,
+                    KIND_BUILTIN,
+                    key,
+                    TYPE_F64_ARRAY,
+                    bytemuck::cast_slice::<f64, u8>(values),
+                );
+            }
+            #[cfg(not(target_endian = "little"))]
+            {
+                let mut payload = Vec::with_capacity(values.len() * 8);
+                extend_f64(&mut payload, values);
+                write_section(buf, KIND_BUILTIN, key, TYPE_F64_ARRAY, &payload);
+            }
         }
     }
 }
@@ -226,18 +291,44 @@ fn write_float_array_section(buf: &mut Vec<u8>, key: &str, values: &FloatArrayDa
 fn write_mat3_section(buf: &mut Vec<u8>, key: &str, values: &Mat3Data) {
     match values {
         Mat3Data::F32(values) => {
-            let mut payload = Vec::with_capacity(36);
-            for row in values {
-                extend_f32(&mut payload, row);
+            #[cfg(target_endian = "little")]
+            {
+                write_section(
+                    buf,
+                    KIND_BUILTIN,
+                    key,
+                    TYPE_MAT3X3_F32,
+                    bytemuck::cast_slice::<[f32; 3], u8>(values.as_slice()),
+                );
             }
-            write_section(buf, KIND_BUILTIN, key, TYPE_MAT3X3_F32, &payload);
+            #[cfg(not(target_endian = "little"))]
+            {
+                let mut payload = Vec::with_capacity(36);
+                for row in values {
+                    extend_f32(&mut payload, row);
+                }
+                write_section(buf, KIND_BUILTIN, key, TYPE_MAT3X3_F32, &payload);
+            }
         }
         Mat3Data::F64(values) => {
-            let mut payload = Vec::with_capacity(72);
-            for row in values {
-                extend_f64(&mut payload, row);
+            #[cfg(target_endian = "little")]
+            {
+                write_section(
+                    buf,
+                    KIND_BUILTIN,
+                    key,
+                    TYPE_MAT3X3_F64,
+                    bytemuck::cast_slice::<[f64; 3], u8>(values.as_slice()),
+                );
             }
-            write_section(buf, KIND_BUILTIN, key, TYPE_MAT3X3_F64, &payload);
+            #[cfg(not(target_endian = "little"))]
+            {
+                let mut payload = Vec::with_capacity(72);
+                for row in values {
+                    extend_f64(&mut payload, row);
+                }
+                write_section(buf, KIND_BUILTIN, key, TYPE_MAT3X3_F64, &payload);
+            }
         }
     }
 }
@@ -345,16 +436,38 @@ fn validate_record_format_compat(molecule: &Molecule, record_format: u32) -> Res
     }
 }
 
+pub(super) fn minimum_record_format_for_molecule(molecule: &Molecule) -> u32 {
+    if validate_record_format_compat(molecule, RECORD_FORMAT_SOA_V2).is_ok() {
+        RECORD_FORMAT_SOA_V2
+    } else {
+        RECORD_FORMAT_SOA_V3
+    }
+}
+
 fn write_positions(buf: &mut Vec<u8>, positions: &Vec3Data) {
     match positions {
         Vec3Data::F32(values) => {
-            for value in values {
-                extend_f32(buf, value);
+            #[cfg(target_endian = "little")]
+            {
+                buf.extend_from_slice(bytemuck::cast_slice::<[f32; 3], u8>(values));
+            }
+            #[cfg(not(target_endian = "little"))]
+            {
+                for value in values {
+                    extend_f32(buf, value);
+                }
             }
         }
         Vec3Data::F64(values) => {
-            for value in values {
-                extend_f64(buf, value);
+            #[cfg(target_endian = "little")]
+            {
+                buf.extend_from_slice(bytemuck::cast_slice::<[f64; 3], u8>(values));
+            }
+            #[cfg(not(target_endian = "little"))]
+            {
+                for value in values {
+                    extend_f64(buf, value);
+                }
             }
         }
     }
@@ -389,6 +502,76 @@ fn count_sections(molecule: &Molecule) -> u16 {
     n_sections += molecule.atom_properties.len() as u16;
     n_sections += molecule.properties.len() as u16;
     n_sections
+}
+
+fn section_size(key_len: usize, payload_len: usize) -> usize {
+    1 + 1 + key_len + 1 + 4 + payload_len
+}
+
+fn estimate_serialized_len(molecule: &Molecule) -> usize {
+    let positions_bytes = match &molecule.positions {
+        Vec3Data::F32(values) => values.len() * 12,
+        Vec3Data::F64(values) => values.len() * 24,
+    };
+    let mut total = 4 + positions_bytes + molecule.atomic_numbers.len() + 2;
+
+    if let Some(charges) = &molecule.charges {
+        let payload_len = match charges {
+            FloatArrayData::F32(values) => values.len() * 4,
+            FloatArrayData::F64(values) => values.len() * 8,
+        };
+        total += section_size("charges".len(), payload_len);
+    }
+    if let Some(cell) = &molecule.cell {
+        let payload_len = match cell {
+            Mat3Data::F32(_) => 36,
+            Mat3Data::F64(_) => 72,
+        };
+        total += section_size("cell".len(), payload_len);
+    }
+    if let Some(energy) = &molecule.energy {
+        let payload_len = match energy {
+            FloatScalarData::F32(_) => 4,
+            FloatScalarData::F64(_) => 8,
+        };
+        total += section_size("energy".len(), payload_len);
+    }
+    if let Some(forces) = &molecule.forces {
+        let payload_len = match forces {
+            Vec3Data::F32(values) => values.len() * 12,
+            Vec3Data::F64(values) => values.len() * 24,
+        };
+        total += section_size("forces".len(), payload_len);
+    }
+    if let Some(name) = &molecule.name {
+        total += section_size("name".len(), name.len());
+    }
+    if molecule.pbc.is_some() {
+        total += section_size("pbc".len(), 3);
+    }
+    if let Some(stress) = &molecule.stress {
+        let payload_len = match stress {
+            Mat3Data::F32(_) => 36,
+            Mat3Data::F64(_) => 72,
+        };
+        total += section_size("stress".len(), payload_len);
+    }
+    if let Some(velocities) = &molecule.velocities {
+        let payload_len = match velocities {
+            Vec3Data::F32(values) => values.len() * 12,
+            Vec3Data::F64(values) => values.len() * 24,
+        };
+        total += section_size("velocities".len(), payload_len);
+    }
+
+    for (key, value) in &molecule.atom_properties {
+        total += section_size(key.len(), property_value_payload_len(value));
+    }
+    for (key, value) in &molecule.properties {
+        total += section_size(key.len(), property_value_payload_len(value));
+    }
+
+    total
 }
 
 fn write_sections(buf: &mut Vec<u8>, molecule: &Molecule) {
@@ -534,7 +717,7 @@ pub(super) fn serialize_molecule_soa(molecule: &Molecule, record_format: u32) ->
     validate_record_format_compat(molecule, record_format)?;
 
     let n = molecule.len();
-    let mut buf = Vec::new();
+    let mut buf = Vec::with_capacity(estimate_serialized_len(molecule));
 
     buf.extend_from_slice(&(n as u32).to_le_bytes());
     write_positions(&mut buf, &molecule.positions);
@@ -562,9 +745,30 @@ fn decode_positions(
             "SOA record truncated at positions".into(),
         ));
     }
+    let payload = &bytes[*pos..positions_end];
     let positions = match positions_type {
-        TYPE_VEC3_F32 => Vec3Data::F32(decode_vec3_f32(&bytes[*pos..positions_end])?),
-        TYPE_VEC3_F64 => Vec3Data::F64(decode_vec3_f64(&bytes[*pos..positions_end])?),
+        TYPE_VEC3_F32 => {
+            let mut values = Vec::with_capacity(n_atoms);
+            for chunk in payload.chunks_exact(12) {
+                values.push([
+                    f32::from_le_bytes(arr(&chunk[0..4])?),
+                    f32::from_le_bytes(arr(&chunk[4..8])?),
+                    f32::from_le_bytes(arr(&chunk[8..12])?),
+                ]);
+            }
+            Vec3Data::F32(values)
+        }
+        TYPE_VEC3_F64 => {
+            let mut values = Vec::with_capacity(n_atoms);
+            for chunk in payload.chunks_exact(24) {
+                values.push([
+                    f64::from_le_bytes(arr(&chunk[0..8])?),
+                    f64::from_le_bytes(arr(&chunk[8..16])?),
+                    f64::from_le_bytes(arr(&chunk[16..24])?),
+                ]);
+            }
+            Vec3Data::F64(values)
+        }
         _ => {
             return Err(Error::InvalidData(format!(
                 "Unsupported positions type tag {}",

@@ -281,8 +281,12 @@ impl Molecule {
     }
 
     pub fn from_atoms(atoms: Vec<Atom>) -> Self {
-        let positions = atoms.iter().map(|atom| atom.position()).collect();
-        let atomic_numbers = atoms.iter().map(|atom| atom.atomic_number).collect();
+        let mut positions = Vec::with_capacity(atoms.len());
+        let mut atomic_numbers = Vec::with_capacity(atoms.len());
+        for atom in atoms {
+            positions.push([atom.x, atom.y, atom.z]);
+            atomic_numbers.push(atom.atomic_number);
+        }
         Self {
             name: None,
             positions: Vec3Data::F32(positions),

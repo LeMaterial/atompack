@@ -1,4 +1,5 @@
 use super::*;
+use atompack::storage::{DatabaseSchema, DatabaseSchemaSection};
 
 /// A single parsed section reference (zero-copy into decompressed bytes).
 #[derive(Clone)]
@@ -27,6 +28,42 @@ pub(crate) struct SectionSchema {
     pub(crate) slot_bytes: usize,
 }
 
+pub(crate) fn parse_mol_fast_soa_v2(bytes: &[u8]) -> atompack::Result<MolData<'_>> {
+    let mut pos = 0usize;
+    let n_atoms = read_u32_le_at(bytes, &mut pos, "SOA n_atoms")? as usize;
+    let positions_len = n_atoms
+        .checked_mul(12)
+        .ok_or_else(|| invalid_data("SOA positions byte length overflow"))?;
+    let positions_bytes = read_bytes_at(bytes, &mut pos, positions_len, "SOA positions")?;
+    let atomic_numbers_bytes = read_bytes_at(bytes, &mut pos, n_atoms, "SOA atomic_numbers")?;
+    let n_sections = read_u16_le_at(bytes, &mut pos, "SOA n_sections")? as usize;
+
+    let mut sections = Vec::with_capacity(n_sections);
+    for _ in 0..n_sections {
+        let kind = read_u8_at(bytes, &mut pos, "SOA section kind")?;
+        let key_len = read_u8_at(bytes, &mut pos, "SOA section key length")? as usize;
+        let key_bytes = read_bytes_at(bytes, &mut pos, key_len, "SOA section key")?;
+        let key = std::str::from_utf8(key_bytes)
+            .map_err(|_| invalid_data("Invalid UTF-8 in SOA section key"))?;
+        let type_tag = read_u8_at(bytes, &mut pos, "SOA section type tag")?;
+        let payload_len = read_u32_le_at(bytes, &mut pos, "SOA section payload length")? as usize;
+        let payload = read_bytes_at(bytes, &mut pos, payload_len, "SOA section payload")?;
+        sections.push(SectionRef {
+            kind,
+            key,
+            type_tag,
+            payload,
+        });
+    }
+
+    Ok(MolData {
+        n_atoms,
+        positions_bytes,
+        atomic_numbers_bytes,
+        sections,
+    })
+}
+
 /// Parse SOA format bytes into MolData without allocation.
 ///
 /// Layout:
@@ -38,10 +75,13 @@ pub(crate) fn parse_mol_fast_soa(
     record_format: u32,
     positions_type_hint: Option<u8>,
 ) -> atompack::Result<MolData<'_>> {
+    if record_format == RECORD_FORMAT_SOA_V2 {
+        return parse_mol_fast_soa_v2(bytes);
+    }
+
     let mut pos = 0usize;
     let n_atoms = read_u32_le_at(bytes, &mut pos, "SOA n_atoms")? as usize;
     let positions_type = match record_format {
-        RECORD_FORMAT_SOA_V2 => TYPE_VEC3_F32,
         RECORD_FORMAT_SOA_V3 => positions_type_hint
             .ok_or_else(|| invalid_data("Missing positions dtype for record format 3"))?,
         _ => {
@@ -231,6 +271,53 @@ pub(crate) fn is_per_atom(kind: u8, key: &str, _type_tag: u8) -> bool {
     }
 }
 
+fn database_schema_section(
+    kind: u8,
+    key: &str,
+    type_tag: u8,
+    payload_len: usize,
+    n_atoms: usize,
+) -> PyResult<DatabaseSchemaSection> {
+    let per_atom = is_per_atom(kind, key, type_tag);
+    let elem_bytes = if type_tag == TYPE_STRING {
+        0
+    } else {
+        let elem_bytes = type_tag_elem_bytes(type_tag);
+        if elem_bytes == 0 {
+            return Err(PyValueError::new_err(format!(
+                "Unsupported section type tag {} for '{}'",
+                type_tag, key
+            )));
+        }
+        elem_bytes
+    };
+    let slot_bytes = if type_tag == TYPE_STRING {
+        0
+    } else if per_atom {
+        let expected = n_atoms.checked_mul(elem_bytes).ok_or_else(|| {
+            PyValueError::new_err(format!("Section '{}' payload length overflow", key))
+        })?;
+        if payload_len != expected {
+            return Err(PyValueError::new_err(format!(
+                "Section '{}' has invalid payload length {} (expected {})",
+                key, payload_len, expected
+            )));
+        }
+        elem_bytes
+    } else {
+        payload_len
+    };
+
+    Ok(DatabaseSchemaSection {
+        kind,
+        key: key.to_string(),
+        type_tag,
+        per_atom,
+        elem_bytes,
+        slot_bytes,
+    })
+}
+
 fn py_decode_float_array_data(
     payload: &[u8],
     type_tag: u8,
@@ -340,12 +427,141 @@ pub(crate) struct SoaMoleculeView {
 }
 
 impl SoaMoleculeView {
+    fn from_storage_v2(bytes: SoaBytes) -> atompack::Result<Self> {
+        if bytes.len() < 6 {
+            return Err(invalid_data("SOA record too small"));
+        }
+
+        let n_atoms = u32::from_le_bytes(slice_to_array(&bytes[0..4], "SOA atom count")?) as usize;
+        let mut pos = 4usize;
+        let positions_start = pos;
+        let positions_len = n_atoms
+            .checked_mul(12)
+            .ok_or_else(|| invalid_data("SOA positions overflow"))?;
+        pos = pos
+            .checked_add(positions_len)
+            .ok_or_else(|| invalid_data("SOA positions overflow"))?;
+        if pos > bytes.len() {
+            return Err(invalid_data("SOA record truncated at positions"));
+        }
+
+        let atomic_numbers_start = pos;
+        pos = pos
+            .checked_add(n_atoms)
+            .ok_or_else(|| invalid_data("SOA atomic_numbers overflow"))?;
+        if pos + 2 > bytes.len() {
+            return Err(invalid_data("SOA record truncated at atomic_numbers"));
+        }
+
+        let n_sections =
+            u16::from_le_bytes(slice_to_array(&bytes[pos..pos + 2], "SOA section count")?) as usize;
+        pos += 2;
+
+        let mut forces = None;
+        let mut energy = None;
+        let mut cell = None;
+        let mut stress = None;
+        let mut charges = None;
+        let mut velocities = None;
+        let mut pbc = None;
+        let mut name = None;
+        let mut custom_sections = Vec::new();
+
+        for _ in 0..n_sections {
+            if pos + 2 > bytes.len() {
+                return Err(invalid_data("SOA section header truncated"));
+            }
+            let kind = bytes[pos];
+            pos += 1;
+            let key_len = bytes[pos] as usize;
+            pos += 1;
+            if pos + key_len > bytes.len() {
+                return Err(invalid_data("SOA section key truncated"));
+            }
+            let key_start = pos;
+            pos += key_len;
+            if pos + 5 > bytes.len() {
+                return Err(invalid_data("SOA section header truncated"));
+            }
+            let type_tag = bytes[pos];
+            pos += 1;
+            let payload_len = u32::from_le_bytes(slice_to_array(
+                &bytes[pos..pos + 4],
+                "SOA section payload length",
+            )?) as usize;
+            pos += 4;
+            let payload_start = pos;
+            pos = pos
+                .checked_add(payload_len)
+                .ok_or_else(|| invalid_data("SOA section payload overflow"))?;
+            if pos > bytes.len() {
+                return Err(invalid_data("SOA section payload truncated"));
+            }
+
+            let key_bytes = &bytes[key_start..key_start + key_len];
+            if kind == KIND_BUILTIN {
+                let slot = (payload_start, payload_len, type_tag);
+                match key_bytes {
+                    b"forces" => forces = Some(slot),
+                    b"energy" => energy = Some(slot),
+                    b"cell" => cell = Some(slot),
+                    b"stress" => stress = Some(slot),
+                    b"charges" => charges = Some(slot),
+                    b"velocities" => velocities = Some(slot),
+                    b"pbc" => pbc = Some(slot),
+                    b"name" => name = Some(slot),
+                    _ => {
+                        custom_sections.push(LazySection {
+                            kind,
+                            key_start,
+                            key_len: key_len as u8,
+                            type_tag,
+                            payload_start,
+                            payload_len,
+                        });
+                    }
+                }
+            } else {
+                custom_sections.push(LazySection {
+                    kind,
+                    key_start,
+                    key_len: key_len as u8,
+                    type_tag,
+                    payload_start,
+                    payload_len,
+                });
+            }
+        }
+
+        Ok(Self {
+            bytes,
+            n_atoms,
+            positions_type: TYPE_VEC3_F32,
+            positions_start,
+            positions_len,
+            atomic_numbers_start,
+            forces,
+            energy,
+            cell,
+            stress,
+            charges,
+            velocities,
+            pbc,
+            name,
+            custom_sections,
+        })
+    }
+
     /// Pure-Rust parser — no Python dependency, safe to call from rayon threads.
     fn from_storage_inner(
         bytes: SoaBytes,
         record_format: u32,
         positions_type_hint: Option<u8>,
     ) -> atompack::Result<Self> {
+        if record_format == RECORD_FORMAT_SOA_V2 {
+            return Self::from_storage_v2(bytes);
+        }
+
         if bytes.len() < 6 {
             return Err(invalid_data("SOA record too small"));
         }
@@ -353,7 +569,6 @@ impl SoaMoleculeView {
         let n_atoms = u32::from_le_bytes(slice_to_array(&bytes[0..4], "SOA atom count")?) as usize;
         let mut pos = 4usize;
         let positions_type = match record_format {
-            RECORD_FORMAT_SOA_V2 => TYPE_VEC3_F32,
             RECORD_FORMAT_SOA_V3 => positions_type_hint
                 .ok_or_else(|| invalid_data("Missing positions dtype for record format 3"))?,
             _ => {
@@ -518,6 +733,134 @@ impl SoaMoleculeView {
 
     pub(crate) fn positions_bytes(&self) -> &[u8] {
         &self.bytes[self.positions_start..self.positions_start + self.positions_len]
+    }
+
+    #[inline]
+    pub(crate) fn raw_bytes(&self) -> &[u8] {
+        self.bytes.as_slice()
+    }
+
+    pub(crate) fn database_schema(&self) -> PyResult<DatabaseSchema> {
+        let mut sections = Vec::with_capacity(8 + self.custom_sections.len());
+
+        if let Some(slot) = self.energy {
+            sections.push(database_schema_section(
+                KIND_BUILTIN,
+                "energy",
+                slot.2,
+                slot.1,
+                self.n_atoms,
+            )?);
+        }
+        if let Some(slot) = self.forces {
+            sections.push(database_schema_section(
+                KIND_BUILTIN,
+                "forces",
+                slot.2,
+                slot.1,
+                self.n_atoms,
+            )?);
+        }
+        if let Some(slot) = self.charges {
+            sections.push(database_schema_section(
+                KIND_BUILTIN,
+                "charges",
+                slot.2,
+                slot.1,
+                self.n_atoms,
+            )?);
+        }
+        if let Some(slot) = self.velocities {
+            sections.push(database_schema_section(
+                KIND_BUILTIN,
+                "velocities",
+                slot.2,
+                slot.1,
+                self.n_atoms,
+            )?);
+        }
+        if let Some(slot) = self.cell {
+            sections.push(database_schema_section(
+                KIND_BUILTIN,
+                "cell",
+                slot.2,
+                slot.1,
+                self.n_atoms,
+            )?);
+        }
+        if let Some(slot) = self.stress {
+            sections.push(database_schema_section(
+                KIND_BUILTIN,
+                "stress",
+                slot.2,
+                slot.1,
+                self.n_atoms,
+            )?);
+        }
+        if let Some(slot) = self.pbc {
+            sections.push(database_schema_section(
+                KIND_BUILTIN,
+                "pbc",
+                slot.2,
+                slot.1,
+                self.n_atoms,
+            )?);
+        }
+        if let Some(slot) = self.name {
+            sections.push(database_schema_section(
+                KIND_BUILTIN,
+                "name",
+                slot.2,
+                slot.1,
+                self.n_atoms,
+            )?);
+        }
+        for section in &self.custom_sections {
+            sections.push(database_schema_section(
+                section.kind,
+                self.lazy_section_key(section)?,
+                section.type_tag,
+                section.payload_len,
+                self.n_atoms,
+            )?);
+        }
+
+        Ok(DatabaseSchema {
+            positions_type: Some(self.positions_type),
+            sections,
+        })
+    }
+
+    pub(crate) fn same_schema_as(&self, other: &Self) -> PyResult<bool> {
+        if self.positions_type != other.positions_type
+            || self.energy != other.energy
+            || self.forces != other.forces
+            || self.charges != other.charges
+            || self.velocities != other.velocities
+            || self.cell != other.cell
+            || self.stress != other.stress
+            || self.pbc != other.pbc
+            || self.name != other.name
+            || self.custom_sections.len() != other.custom_sections.len()
+        {
+            return Ok(false);
+        }
+
+        for (left, right) in self
+            .custom_sections
+            .iter()
+            .zip(other.custom_sections.iter())
+        {
+            if left.kind != right.kind
+                || left.type_tag != right.type_tag
+                || left.payload_len != right.payload_len
+                || self.lazy_section_key(left)? != other.lazy_section_key(right)?
+            {
+                return Ok(false);
+            }
+        }
+
+        Ok(true)
     }
 
     pub(crate) fn atomic_numbers_bytes(&self) -> &[u8] {

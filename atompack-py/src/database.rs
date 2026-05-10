@@ -127,6 +127,15 @@ impl PyAtomDatabase {
 
     /// Add a molecule to the database
     fn add_molecule(&mut self, molecule: &PyMolecule) -> PyResult<()> {
+        if let Some(view) = molecule.as_view() {
+            return self
+                .inner
+                .add_raw_soa_records_with_schema(
+                    &[(view.raw_bytes(), view.n_atoms as u32)],
+                    view.database_schema()?,
+                )
+                .map_err(|e| PyValueError::new_err(format!("{}", e)));
+        }
         let owned = molecule.clone_as_owned()?;
         self.inner
             .add_molecule(&owned)
@@ -135,10 +144,47 @@ impl PyAtomDatabase {
 
     /// Add multiple molecules (processed in parallel)
     fn add_molecules(&mut self, molecules: Vec<PyRef<PyMolecule>>) -> PyResult<()> {
+        let mut raw_records: Vec<(&[u8], u32)> = Vec::new();
+        let mut raw_views: Vec<&SoaMoleculeView> = Vec::new();
         let mut owned_molecules: Vec<Molecule> = Vec::new();
 
         for m in &molecules {
-            owned_molecules.push(m.clone_as_owned()?);
+            if let Some(view) = m.as_view() {
+                raw_records.push((view.raw_bytes(), view.n_atoms as u32));
+                raw_views.push(view);
+            } else {
+                owned_molecules.push(m.clone_as_owned()?);
+            }
+        }
+
+        if !raw_records.is_empty() {
+            let mut fast_schema = None;
+            if let Some((first, rest)) = raw_views.split_first() {
+                let mut all_match = true;
+                for view in rest {
+                    if !view.same_schema_as(first)? {
+                        all_match = false;
+                        break;
+                    }
+                }
+                if all_match {
+                    fast_schema = Some(first.database_schema()?);
+                }
+            }
+
+            if let Some(schema) = fast_schema {
+                self.inner
+                    .add_raw_soa_records_with_schema(&raw_records, schema)
+                    .map_err(|e| PyValueError::new_err(format!("{}", e)))?;
+            } else {
+                let raw_records_with_positions = raw_views
+                    .iter()
+                    .map(|view| (view.raw_bytes(), view.n_atoms as u32, view.positions_type))
+                    .collect::<Vec<_>>();
+                self.inner
+                    .add_raw_soa_records_with_positions_type(&raw_records_with_positions)
+                    .map_err(|e| PyValueError::new_err(format!("{}", e)))?;
+            }
         }
         if !owned_molecules.is_empty() {
             let mol_refs: Vec<&Molecule> = owned_molecules.iter().collect();

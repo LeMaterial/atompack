@@ -1,6 +1,4 @@
-use super::soa::{
-    arr, positions_stride, property_value_to_bytes, property_value_type_tag, resolve_positions_type,
-};
+use super::soa::{arr, positions_stride, property_value_type_tag, resolve_positions_type};
 use super::*;
 use crate::atom::{FloatArrayData, FloatScalarData, Mat3Data, Vec3Data};
 use std::collections::BTreeMap;
@@ -21,7 +19,7 @@ pub(super) struct SchemaEntry {
 
 const SCHEMA_BLOB_VERSION: u32 = 1;
 
-fn positions_type_from_molecule(molecule: &Molecule) -> u8 {
+pub(super) fn positions_type_from_molecule(molecule: &Molecule) -> u8 {
     match molecule.positions {
         Vec3Data::F32(_) => TYPE_VEC3_F32,
         Vec3Data::F64(_) => TYPE_VEC3_F64,
@@ -236,6 +234,32 @@ fn validate_builtin_type_tag_for_record_format(
     }
 }
 
+pub(super) fn validate_schema_lock_for_record_format(
+    record_format: u32,
+    schema: &SchemaLock,
+) -> Result<()> {
+    let _ = resolve_positions_type(record_format, schema.positions_type)?;
+    for ((kind, key), entry) in &schema.sections {
+        if *kind == KIND_BUILTIN {
+            validate_builtin_type_tag_for_record_format(record_format, key, entry.type_tag)?;
+        }
+    }
+    Ok(())
+}
+
+fn property_value_payload_len(value: &PropertyValue) -> usize {
+    match value {
+        PropertyValue::Float(_) | PropertyValue::Int(_) => 8,
+        PropertyValue::String(value) => value.len(),
+        PropertyValue::FloatArray(values) => values.len() * 8,
+        PropertyValue::Vec3Array(values) => values.len() * 12,
+        PropertyValue::IntArray(values) => values.len() * 8,
+        PropertyValue::Float32Array(values) => values.len() * 4,
+        PropertyValue::Vec3ArrayF64(values) => values.len() * 24,
+        PropertyValue::Int32Array(values) => values.len() * 4,
+    }
+}
+
 pub(super) fn schema_from_molecule(molecule: &Molecule) -> Result<SchemaLock> {
     let n_atoms = molecule.len();
     let mut schema = SchemaLock {
@@ -303,7 +327,7 @@ pub(super) fn schema_from_molecule(molecule: &Molecule) -> Result<SchemaLock> {
             KIND_ATOM_PROP,
             key,
             property_value_type_tag(value),
-            property_value_to_bytes(value).len(),
+            property_value_payload_len(value),
         )?;
     }
     for (key, value) in &molecule.properties {
@@ -311,7 +335,7 @@ pub(super) fn schema_from_molecule(molecule: &Molecule) -> Result<SchemaLock> {
             KIND_MOL_PROP,
             key,
             property_value_type_tag(value),
-            property_value_to_bytes(value).len(),
+            property_value_payload_len(value),
         )?;
     }
 

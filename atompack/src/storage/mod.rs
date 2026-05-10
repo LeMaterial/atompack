@@ -41,10 +41,12 @@ mod soa;
 use self::header::{Header, encode_header_slot, read_best_header};
 use self::index::{IndexStorage, MoleculeIndex, decode_index, encode_index};
 use self::schema::{
-    SchemaLock, decode_schema_lock, encode_schema_lock, merge_schema_lock, record_schema,
-    schema_from_molecule,
+    SchemaEntry, SchemaLock, decode_schema_lock, encode_schema_lock, merge_schema_lock,
+    record_schema, schema_from_molecule, validate_schema_lock_for_record_format,
 };
-use self::soa::{arr, deserialize_molecule_soa, serialize_molecule_soa};
+use self::soa::{
+    arr, deserialize_molecule_soa, minimum_record_format_for_molecule, serialize_molecule_soa,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -55,7 +57,7 @@ const MAGIC: &[u8; 4] = b"ATPK";
 const FILE_FORMAT_VERSION: u32 = 2;
 const RECORD_FORMAT_SOA_V2: u32 = 2;
 const RECORD_FORMAT_SOA_V3: u32 = 3;
-const RECORD_FORMAT_SOA: u32 = RECORD_FORMAT_SOA_V3;
+const RECORD_FORMAT_SOA: u32 = RECORD_FORMAT_SOA_V2;
 
 // Section kind tags (inside each SOA record)
 const KIND_BUILTIN: u8 = 0;
@@ -103,6 +105,63 @@ pub struct SharedMmapBytes {
 impl SharedMmapBytes {
     pub fn as_slice(&self) -> &[u8] {
         &self.mmap[self.start..self.end]
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DatabaseSchemaSection {
+    pub kind: u8,
+    pub key: String,
+    pub type_tag: u8,
+    pub per_atom: bool,
+    pub elem_bytes: usize,
+    pub slot_bytes: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DatabaseSchema {
+    pub positions_type: Option<u8>,
+    pub sections: Vec<DatabaseSchemaSection>,
+}
+
+fn database_schema_from_lock(lock: &SchemaLock) -> DatabaseSchema {
+    let sections = lock
+        .sections
+        .iter()
+        .map(|((kind, key), entry)| DatabaseSchemaSection {
+            kind: *kind,
+            key: key.clone(),
+            type_tag: entry.type_tag,
+            per_atom: entry.per_atom,
+            elem_bytes: entry.elem_bytes,
+            slot_bytes: entry.slot_bytes,
+        })
+        .collect();
+    DatabaseSchema {
+        positions_type: lock.positions_type,
+        sections,
+    }
+}
+
+fn schema_lock_from_database_schema(schema: DatabaseSchema) -> SchemaLock {
+    let sections = schema
+        .sections
+        .into_iter()
+        .map(|section| {
+            (
+                (section.kind, section.key),
+                SchemaEntry {
+                    type_tag: section.type_tag,
+                    per_atom: section.per_atom,
+                    elem_bytes: section.elem_bytes,
+                    slot_bytes: section.slot_bytes,
+                },
+            )
+        })
+        .collect();
+    SchemaLock {
+        positions_type: schema.positions_type,
+        sections,
     }
 }
 
@@ -350,6 +409,23 @@ impl AtomDatabase {
         Ok(lock)
     }
 
+    fn can_promote_record_format(&self) -> bool {
+        self.record_format == RECORD_FORMAT_SOA_V2
+            && self.index.is_empty()
+            && self.schema_lock.is_none()
+    }
+
+    fn resolved_record_format_for_schema(&self, schema: &SchemaLock) -> Result<u32> {
+        match validate_schema_lock_for_record_format(self.record_format, schema) {
+            Ok(()) => Ok(self.record_format),
+            Err(current_err) if self.can_promote_record_format() => {
+                validate_schema_lock_for_record_format(RECORD_FORMAT_SOA_V3, schema)?;
+                Ok(RECORD_FORMAT_SOA_V3)
+            }
+            Err(current_err) => Err(current_err),
+        }
+    }
+
     fn ensure_schema_compatible<'a, I>(&mut self, records: I) -> Result<()>
     where
         I: IntoIterator<Item = (&'a [u8], Option<u8>)>,
@@ -359,136 +435,46 @@ impl AtomDatabase {
             None if self.index.is_empty() => SchemaLock::default(),
             None => self.rebuild_schema_lock()?,
         };
+        let mut record_format = self.record_format;
+        let can_promote = self.can_promote_record_format();
 
         for (bytes, positions_type_hint) in records {
             let hint = positions_type_hint.or(lock.positions_type);
-            let record = record_schema(bytes, self.record_format, hint)?;
+            let record = match record_schema(bytes, record_format, hint) {
+                Ok(record) => record,
+                Err(current_err) if can_promote && record_format == RECORD_FORMAT_SOA_V2 => {
+                    let record = record_schema(bytes, RECORD_FORMAT_SOA_V3, hint)?;
+                    record_format = RECORD_FORMAT_SOA_V3;
+                    record
+                }
+                Err(current_err) => return Err(current_err),
+            };
             merge_schema_lock(&mut lock, &record)?;
         }
 
+        self.record_format = record_format;
         self.schema_lock = Some(lock);
         Ok(())
     }
 
-    // -- Writing -------------------------------------------------------------
-
-    /// Add a single molecule.
-    pub fn add_molecule(&mut self, molecule: &Molecule) -> Result<()> {
-        self.add_molecules(&[molecule])
-    }
-
-    /// Add multiple molecules. Serialization and compression run in parallel
-    /// (rayon); the compressed blobs are then appended sequentially.
-    pub fn add_molecules(&mut self, molecules: &[&Molecule]) -> Result<()> {
-        if molecules.is_empty() {
-            return Ok(());
-        }
-
-        let serialized: Vec<(Vec<u8>, u32, u8)> = molecules
-            .par_iter()
-            .map(|mol| {
-                let bytes = serialize_molecule_soa(mol, self.record_format)?;
-                let num_atoms = mol.len() as u32;
-                Ok((
-                    bytes,
-                    num_atoms,
-                    schema_from_molecule(mol)?.positions_type.unwrap(),
-                ))
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        self.append_owned_soa_records(serialized)
-    }
-
-    /// Add pre-serialized SOA records, compressing in parallel and appending to the file.
-    ///
-    /// Each entry is `(soa_bytes, num_atoms)`. The bytes must be valid SOA-encoded molecule
-    /// records (the same format `serialize_molecule_soa` produces). This skips serialization
-    /// entirely — useful when the caller already has SOA bytes (e.g. from a View or
-    /// direct numpy-to-SOA construction).
-    pub fn add_raw_soa_records(&mut self, records: &[(&[u8], u32)]) -> Result<()> {
-        if records.is_empty() {
-            return Ok(());
-        }
-        self.append_soa_records(records)
-    }
-
-    #[doc(hidden)]
-    pub fn add_owned_soa_records(&mut self, records: Vec<(Vec<u8>, u32, u8)>) -> Result<()> {
-        if records.is_empty() {
-            return Ok(());
-        }
-        self.append_owned_soa_records(records)
-    }
-
-    fn append_soa_records(&mut self, records: &[(&[u8], u32)]) -> Result<()> {
-        if matches!(&self.index, IndexStorage::MemoryMapped { .. }) {
-            return Err(Error::InvalidData(
-                "Cannot add molecules to a database opened with a memory-mapped index (read-only); reopen without mmap to write."
-                    .into(),
-            ));
-        }
-
-        self.truncate_uncommitted_tail_if_needed()?;
-        self.ensure_schema_compatible(records.iter().map(|(bytes, _)| (*bytes, None)))?;
-
-        let compression = self.compression;
-
-        // Step 1: Compress all records in parallel.
-        let compressed_records: Vec<(Vec<u8>, u32, u32)> = records
-            .par_iter()
-            .map(|(bytes, num_atoms)| {
-                let uncompressed_size = bytes.len() as u32;
-                let compressed = compress(bytes, compression)?;
-                Ok((compressed, uncompressed_size, *num_atoms))
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        // Step 2: Write all compressed data sequentially (file I/O must be sequential)
-        let mut file = OpenOptions::new().append(true).open(&self.path)?;
-
-        let mut offset = file.seek(SeekFrom::End(0))?;
-        let mut new_indices = Vec::with_capacity(compressed_records.len());
-
-        for (compressed_data, uncompressed_size, num_atoms) in compressed_records {
-            file.write_all(&compressed_data)?;
-
-            new_indices.push(MoleculeIndex {
-                offset,
-                compressed_size: compressed_data.len() as u32,
-                uncompressed_size,
-                num_atoms,
-            });
-
-            offset += compressed_data.len() as u64;
-        }
-
-        file.flush()?;
-        self.index.extend(new_indices)?;
-
+    fn ensure_schema_lock(&mut self, incoming: &SchemaLock) -> Result<()> {
+        self.record_format = self.resolved_record_format_for_schema(incoming)?;
+        let mut lock = match &self.schema_lock {
+            Some(lock) => lock.clone(),
+            None if self.index.is_empty() => SchemaLock::default(),
+            None => self.rebuild_schema_lock()?,
+        };
+        merge_schema_lock(&mut lock, incoming)?;
+        self.schema_lock = Some(lock);
         Ok(())
     }
 
-    fn append_owned_soa_records(&mut self, records: Vec<(Vec<u8>, u32, u8)>) -> Result<()> {
-        if matches!(&self.index, IndexStorage::MemoryMapped { .. }) {
-            return Err(Error::InvalidData(
-                "Cannot add molecules to a database opened with a memory-mapped index (read-only); reopen without mmap to write."
-                    .into(),
-            ));
-        }
-
-        self.truncate_uncommitted_tail_if_needed()?;
-        self.ensure_schema_compatible(
-            records
-                .iter()
-                .map(|(bytes, _, positions_type)| (bytes.as_slice(), Some(*positions_type))),
-        )?;
-
+    fn write_owned_records(&mut self, records: Vec<(Vec<u8>, u32)>) -> Result<()> {
         let compression = self.compression;
 
         let compressed_records: Vec<(Vec<u8>, u32, u32)> = records
             .into_par_iter()
-            .map(|(bytes, num_atoms, _positions_type)| {
+            .map(|(bytes, num_atoms)| {
                 let uncompressed_size = bytes.len() as u32;
                 let compressed = compress(&bytes, compression)?;
                 Ok((compressed, uncompressed_size, num_atoms))
@@ -517,6 +503,236 @@ impl AtomDatabase {
         self.index.extend(new_indices)?;
 
         Ok(())
+    }
+
+    fn write_borrowed_records(&mut self, records: &[(&[u8], u32)]) -> Result<()> {
+        let compression = self.compression;
+
+        let compressed_records: Vec<(Vec<u8>, u32, u32)> = records
+            .par_iter()
+            .map(|(bytes, num_atoms)| {
+                let uncompressed_size = bytes.len() as u32;
+                let compressed = compress(bytes, compression)?;
+                Ok((compressed, uncompressed_size, *num_atoms))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let mut file = OpenOptions::new().append(true).open(&self.path)?;
+
+        let mut offset = file.seek(SeekFrom::End(0))?;
+        let mut new_indices = Vec::with_capacity(compressed_records.len());
+
+        for (compressed_data, uncompressed_size, num_atoms) in compressed_records {
+            file.write_all(&compressed_data)?;
+
+            new_indices.push(MoleculeIndex {
+                offset,
+                compressed_size: compressed_data.len() as u32,
+                uncompressed_size,
+                num_atoms,
+            });
+
+            offset += compressed_data.len() as u64;
+        }
+
+        file.flush()?;
+        self.index.extend(new_indices)?;
+
+        Ok(())
+    }
+
+    // -- Writing -------------------------------------------------------------
+
+    /// Add a single molecule.
+    pub fn add_molecule(&mut self, molecule: &Molecule) -> Result<()> {
+        self.add_molecules(&[molecule])
+    }
+
+    /// Add multiple molecules. Serialization and compression run in parallel
+    /// (rayon); the compressed blobs are then appended sequentially.
+    pub fn add_molecules(&mut self, molecules: &[&Molecule]) -> Result<()> {
+        if molecules.is_empty() {
+            return Ok(());
+        }
+
+        let target_format = if self.can_promote_record_format()
+            && molecules.iter().any(|molecule| {
+                minimum_record_format_for_molecule(molecule) == RECORD_FORMAT_SOA_V3
+            }) {
+            RECORD_FORMAT_SOA_V3
+        } else {
+            self.record_format
+        };
+
+        let serialized: Vec<(Vec<u8>, u32, SchemaLock)> = molecules
+            .par_iter()
+            .map(|mol| {
+                let bytes = serialize_molecule_soa(mol, target_format)?;
+                let num_atoms = mol.len() as u32;
+                Ok((bytes, num_atoms, schema_from_molecule(mol)?))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let mut batch_schema = SchemaLock::default();
+        let mut records = Vec::with_capacity(serialized.len());
+        for (bytes, num_atoms, schema) in serialized {
+            merge_schema_lock(&mut batch_schema, &schema)?;
+            records.push((bytes, num_atoms));
+        }
+
+        self.append_owned_soa_records_prevalidated(records, batch_schema)
+    }
+
+    /// Add pre-serialized SOA records, compressing in parallel and appending to the file.
+    ///
+    /// Each entry is `(soa_bytes, num_atoms)`. The bytes must be valid SOA-encoded molecule
+    /// records (the same format `serialize_molecule_soa` produces). This skips serialization
+    /// entirely — useful when the caller already has SOA bytes (e.g. from a View or
+    /// direct numpy-to-SOA construction).
+    pub fn add_raw_soa_records(&mut self, records: &[(&[u8], u32)]) -> Result<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
+        self.append_soa_records(
+            records
+                .iter()
+                .map(|(bytes, num_atoms)| (*bytes, *num_atoms, None)),
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn add_raw_soa_records_with_positions_type(
+        &mut self,
+        records: &[(&[u8], u32, u8)],
+    ) -> Result<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
+        self.append_soa_records(
+            records.iter().map(|(bytes, num_atoms, positions_type)| {
+                (*bytes, *num_atoms, Some(*positions_type))
+            }),
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn add_raw_soa_records_with_schema(
+        &mut self,
+        records: &[(&[u8], u32)],
+        schema: DatabaseSchema,
+    ) -> Result<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
+        self.append_raw_soa_records_prevalidated(records, schema_lock_from_database_schema(schema))
+    }
+
+    #[doc(hidden)]
+    pub fn add_owned_soa_records(&mut self, records: Vec<(Vec<u8>, u32, u8)>) -> Result<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
+        self.append_owned_soa_records(records)
+    }
+
+    #[doc(hidden)]
+    pub fn add_owned_soa_records_with_schema(
+        &mut self,
+        records: Vec<(Vec<u8>, u32)>,
+        schema: DatabaseSchema,
+    ) -> Result<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
+        self.append_owned_soa_records_prevalidated(
+            records,
+            schema_lock_from_database_schema(schema),
+        )
+    }
+
+    fn append_soa_records<'a, I>(&mut self, records: I) -> Result<()>
+    where
+        I: IntoIterator<Item = (&'a [u8], u32, Option<u8>)>,
+    {
+        if matches!(&self.index, IndexStorage::MemoryMapped { .. }) {
+            return Err(Error::InvalidData(
+                "Cannot add molecules to a database opened with a memory-mapped index (read-only); reopen without mmap to write."
+                    .into(),
+            ));
+        }
+
+        let records: Vec<(&[u8], u32, Option<u8>)> = records.into_iter().collect();
+        if records.is_empty() {
+            return Ok(());
+        }
+
+        self.truncate_uncommitted_tail_if_needed()?;
+        self.ensure_schema_compatible(
+            records
+                .iter()
+                .map(|(bytes, _, positions_type_hint)| (*bytes, *positions_type_hint)),
+        )?;
+        let borrowed = records
+            .iter()
+            .map(|(bytes, num_atoms, _)| (*bytes, *num_atoms))
+            .collect::<Vec<_>>();
+        self.write_borrowed_records(&borrowed)
+    }
+
+    fn append_owned_soa_records(&mut self, records: Vec<(Vec<u8>, u32, u8)>) -> Result<()> {
+        if matches!(&self.index, IndexStorage::MemoryMapped { .. }) {
+            return Err(Error::InvalidData(
+                "Cannot add molecules to a database opened with a memory-mapped index (read-only); reopen without mmap to write."
+                    .into(),
+            ));
+        }
+
+        self.truncate_uncommitted_tail_if_needed()?;
+        self.ensure_schema_compatible(
+            records
+                .iter()
+                .map(|(bytes, _, positions_type)| (bytes.as_slice(), Some(*positions_type))),
+        )?;
+
+        let records = records
+            .into_iter()
+            .map(|(bytes, num_atoms, _positions_type)| (bytes, num_atoms))
+            .collect();
+        self.write_owned_records(records)
+    }
+
+    fn append_owned_soa_records_prevalidated(
+        &mut self,
+        records: Vec<(Vec<u8>, u32)>,
+        batch_schema: SchemaLock,
+    ) -> Result<()> {
+        if matches!(&self.index, IndexStorage::MemoryMapped { .. }) {
+            return Err(Error::InvalidData(
+                "Cannot add molecules to a database opened with a memory-mapped index (read-only); reopen without mmap to write."
+                    .into(),
+            ));
+        }
+
+        self.truncate_uncommitted_tail_if_needed()?;
+        self.ensure_schema_lock(&batch_schema)?;
+        self.write_owned_records(records)
+    }
+
+    fn append_raw_soa_records_prevalidated(
+        &mut self,
+        records: &[(&[u8], u32)],
+        batch_schema: SchemaLock,
+    ) -> Result<()> {
+        if matches!(&self.index, IndexStorage::MemoryMapped { .. }) {
+            return Err(Error::InvalidData(
+                "Cannot add molecules to a database opened with a memory-mapped index (read-only); reopen without mmap to write."
+                    .into(),
+            ));
+        }
+
+        self.truncate_uncommitted_tail_if_needed()?;
+        self.ensure_schema_lock(&batch_schema)?;
+        self.write_borrowed_records(records)
     }
 
     // -- Reading -------------------------------------------------------------
@@ -716,6 +932,15 @@ impl AtomDatabase {
         self.schema_lock
             .as_ref()
             .and_then(|lock| lock.positions_type)
+    }
+
+    pub fn schema_info(&self) -> Option<DatabaseSchema> {
+        self.schema_lock.as_ref().map(database_schema_from_lock)
+    }
+
+    #[doc(hidden)]
+    pub fn record_format_for_schema(&self, schema: DatabaseSchema) -> Result<u32> {
+        self.resolved_record_format_for_schema(&schema_lock_from_database_schema(schema))
     }
 
     /// Compressed bytes for a molecule from the mmap (None if no mmap).
@@ -1273,6 +1498,35 @@ mod tests {
     }
 
     #[test]
+    fn test_empty_database_stays_v2_for_v2_compatible_first_write() {
+        let temp = NamedTempFile::new().unwrap();
+        let path = temp.path().to_path_buf();
+        let mut db = AtomDatabase::create(&path, CompressionType::None).unwrap();
+
+        let mut mol = Molecule::new(vec![[0.0, 0.0, 0.0]], vec![6]).unwrap();
+        mol.energy = Some(FloatScalarData::F64(-1.0));
+        mol.forces = Some(Vec3Data::F32(vec![[0.1, 0.2, 0.3]]));
+
+        assert_eq!(db.record_format(), RECORD_FORMAT_SOA_V2);
+        db.add_molecule(&mol).unwrap();
+        assert_eq!(db.record_format(), RECORD_FORMAT_SOA_V2);
+    }
+
+    #[test]
+    fn test_empty_database_promotes_to_v3_when_first_write_requires_it() {
+        let temp = NamedTempFile::new().unwrap();
+        let path = temp.path().to_path_buf();
+        let mut db = AtomDatabase::create(&path, CompressionType::None).unwrap();
+
+        let mut mol = Molecule::new_f64(vec![[0.0, 0.0, 0.0]], vec![6]).unwrap();
+        mol.forces = Some(Vec3Data::F64(vec![[0.1, 0.2, 0.3]]));
+
+        assert_eq!(db.record_format(), RECORD_FORMAT_SOA_V2);
+        db.add_molecule(&mol).unwrap();
+        assert_eq!(db.record_format(), RECORD_FORMAT_SOA_V3);
+    }
+
+    #[test]
     fn test_schema_lock_rejects_custom_shape_mismatch() {
         use crate::atom::PropertyValue;
 
@@ -1299,7 +1553,10 @@ mod tests {
         let temp = NamedTempFile::new().unwrap();
         let path = temp.path().to_path_buf();
         let mut db = AtomDatabase::create(&path, CompressionType::None).unwrap();
-        db.record_format = RECORD_FORMAT_SOA_V2;
+
+        let legacy = Molecule::new(vec![[0.0, 0.0, 0.0]], vec![6]).unwrap();
+        db.add_molecule(&legacy).unwrap();
+        assert_eq!(db.record_format(), RECORD_FORMAT_SOA_V2);
 
         let mut mol = molecule_from_atoms(vec![Atom::new(0.0, 0.0, 0.0, 6)]);
         mol.cell = Some(Mat3Data::F32([
