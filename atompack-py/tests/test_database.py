@@ -324,6 +324,28 @@ def test_database_add_arrays_batch_promotes_to_float64_geometry_when_needed(
     assert flat["forces"].dtype == np.float64
 
 
+def test_database_negative_indices_work_across_read_apis(tmp_path: Path) -> None:
+    path = tmp_path / "negative_indices.atp"
+    db = atompack.Database(str(path))
+    db.add_molecules([_make_molecule(-1.0), _make_molecule(-2.0), _make_molecule(-3.0)])
+    db.flush()
+
+    reopened = atompack.Database.open(str(path))
+
+    assert reopened[-1].energy == pytest.approx(-3.0)
+    assert reopened.get_molecule(-2).energy == pytest.approx(-2.0)
+    assert [m.energy for m in reopened.get_molecules([-1, 0, -3])] == pytest.approx(
+        [-3.0, -1.0, -1.0]
+    )
+    np.testing.assert_allclose(
+        reopened.get_molecules_flat([-1, -2])["energy"],
+        np.array([-3.0, -2.0], dtype=np.float64),
+    )
+
+    with pytest.raises(IndexError, match="out of bounds"):
+        reopened.get_molecule(-4)
+
+
 @pytest.mark.parametrize("mmap", [False, True])
 @pytest.mark.parametrize("compression", ["none", "lz4", "zstd"])
 def test_database_single_item_reads_are_view_compatible(
@@ -735,19 +757,15 @@ def test_database_open_mmap_populate(tmp_path: Path) -> None:
     assert db_r[0].energy == pytest.approx(-3.0)
 
 
-def test_database_negative_indexing_raises_overflow_error(tmp_path: Path) -> None:
-    # Database does not support negative indexing today. PyO3 extracts the
-    # index argument as `usize`, so a negative integer raises OverflowError
-    # at the FFI boundary. If wraparound semantics are ever added, this
-    # test will fail loudly so the intent is explicit.
+def test_database_negative_indexing_out_of_bounds_raises_index_error(tmp_path: Path) -> None:
     path = tmp_path / "negidx.atp"
     db = atompack.Database(str(path))
     db.add_molecule(_make_molecule(-1.0))
     db.flush()
 
     db_r = atompack.Database.open(str(path))
-    with pytest.raises(OverflowError, match=r"negative"):
-        _ = db_r[-1]
+    with pytest.raises(IndexError, match=r"out of bounds"):
+        _ = db_r[-2]
 
 
 def test_database_empty_molecule_roundtrip(tmp_path: Path) -> None:
