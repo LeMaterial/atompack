@@ -7,11 +7,11 @@ ATOMPACK_PERF_COLOR ?= always
 override UV_CACHE_DIR := $(CURDIR)/.uv-cache
 
 .PHONY: help \
-	rust-fmt rust-fmt-check rust-lint rust-test \
-	py-sync py-fmt py-fmt-check py-lint py-lint-fix py-dev py-dev-release py-test py-test-benchmarks \
+	rust-fmt rust-fmt-check rust-lint rust-test rust-coverage \
+	py-sync py-fmt py-fmt-check py-lint py-lint-fix py-dev py-dev-release py-test py-test-benchmarks py-coverage \
 	perf-smoke-rust perf-smoke-py perf-smoke \
 	docs-sync docs-build docs \
-	fmt fmt-check lint test \
+	fmt fmt-check lint test coverage \
 	ci-rust ci-py ci
 
 help:
@@ -33,6 +33,9 @@ help:
 	@echo "  make py-dev           uv maturin develop (atompack-py)"
 	@echo "  make py-dev-release   uv maturin develop -r (atompack-py)"
 	@echo "  make perf-smoke       Run opt-in Rust + Python release throughput smoke tests"
+	@echo "  make py-coverage      uv pytest-cov core suite with XML + HTML reports"
+	@echo "  make rust-coverage    cargo llvm-cov workspace report in coverage/rust.lcov"
+	@echo "  make coverage         Run both Python and Rust coverage targets"
 	@echo ""
 	@echo "Docs:"
 	@echo "  make docs-sync        Install docs deps (uv, atompack-py docs group)"
@@ -50,6 +53,11 @@ rust-lint:
 
 rust-test:
 	cargo test --workspace
+
+rust-coverage:
+	@command -v cargo-llvm-cov >/dev/null 2>&1 || (echo "cargo-llvm-cov not found; install with 'cargo install cargo-llvm-cov'" && exit 1)
+	mkdir -p coverage
+	cargo llvm-cov --workspace --lcov --output-path coverage/rust.lcov
 
 py-sync:
 	@command -v $(UV) >/dev/null 2>&1 || (echo "uv not found; install from https://docs.astral.sh/uv/" && exit 1)
@@ -96,6 +104,10 @@ perf-smoke-py: py-dev-release
 
 perf-smoke: perf-smoke-rust perf-smoke-py
 
+py-coverage: py-dev
+	@command -v $(UV) >/dev/null 2>&1 || (echo "uv not found; install from https://docs.astral.sh/uv/" && exit 1)
+	cd atompack-py && mkdir -p coverage && UV_CACHE_DIR=$(UV_CACHE_DIR) $(UV) run --extra dev --locked --with pytest-cov pytest tests --ignore=tests/benchmarks --cov=atompack --cov-report=term-missing --cov-report=xml:coverage/python-coverage.xml --cov-report=html:coverage/htmlcov
+
 docs-sync:
 	@command -v $(UV) >/dev/null 2>&1 || (echo "uv not found; install from https://docs.astral.sh/uv/" && exit 1)
 	UV_CACHE_DIR=$(UV_CACHE_DIR) $(UV) sync --project atompack-py --group docs --locked
@@ -120,6 +132,8 @@ fmt-check: rust-fmt-check py-fmt-check
 lint: rust-lint py-lint
 
 test: rust-test py-test
+
+coverage: rust-coverage py-coverage
 
 ci-rust: rust-fmt-check rust-lint rust-test
 

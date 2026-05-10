@@ -1,5 +1,11 @@
 # Atompack
 
+<p align="center">
+  <a href="https://codecov.io/gh/LeMaterial/atompack">
+    <img alt="Codecov" src="https://codecov.io/gh/LeMaterial/atompack/branch/main/graph/badge.svg">
+  </a>
+</p>
+
 Append-only molecule storage for atomistic ML datasets.
 
 Atompack is a Python package plus Rust core crate for writing, reading, and distributing molecular
