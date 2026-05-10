@@ -243,6 +243,9 @@ pub(crate) fn parse_mat3_field(value: &Bound<'_, PyAny>, label: &str) -> PyResul
 }
 
 pub(crate) fn parse_property_value(value: &Bound<'_, PyAny>) -> PyResult<PropertyValue> {
+    if value.is_none() {
+        return Ok(PropertyValue::None);
+    }
     if let Ok(v) = value.extract::<i64>() {
         return Ok(PropertyValue::Int(v));
     }
@@ -305,6 +308,6 @@ pub(crate) fn parse_property_value(value: &Bound<'_, PyAny>) -> PyResult<Propert
         });
     }
     Err(PyValueError::new_err(
-        "Unsupported property type. Supported: float, int, str, ndarray",
+        "Unsupported property type. Supported: None, float, int, str, ndarray",
     ))
 }

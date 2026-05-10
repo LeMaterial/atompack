@@ -69,6 +69,7 @@ pub(super) fn float_scalar_payload_len(value: &FloatScalarData) -> usize {
 
 pub(super) fn property_value_type_tag(value: &PropertyValue) -> u8 {
     match value {
+        PropertyValue::None => TYPE_NONE,
         PropertyValue::Float(_) => TYPE_FLOAT,
         PropertyValue::Int(_) => TYPE_INT,
         PropertyValue::String(_) => TYPE_STRING,
@@ -83,6 +84,7 @@ pub(super) fn property_value_type_tag(value: &PropertyValue) -> u8 {
 
 pub(super) fn property_value_payload_len(value: &PropertyValue) -> usize {
     match value {
+        PropertyValue::None => 0,
         PropertyValue::Float(_) | PropertyValue::Int(_) => 8,
         PropertyValue::String(value) => value.len(),
         PropertyValue::FloatArray(values) => values.len() * 8,
@@ -120,6 +122,7 @@ fn extend_i32(buf: &mut Vec<u8>, values: &[i32]) {
 
 pub(super) fn property_value_to_bytes(value: &PropertyValue) -> Vec<u8> {
     match value {
+        PropertyValue::None => Vec::new(),
         PropertyValue::Float(value) => value.to_le_bytes().to_vec(),
         PropertyValue::Int(value) => value.to_le_bytes().to_vec(),
         PropertyValue::String(value) => value.as_bytes().to_vec(),
@@ -291,6 +294,14 @@ pub(super) fn decode_mat3x3_f64(payload: &[u8]) -> Result<[[f64; 3]; 3]> {
 
 pub(super) fn decode_property_value(type_tag: u8, payload: &[u8]) -> Result<PropertyValue> {
     Ok(match type_tag {
+        TYPE_NONE => {
+            if !payload.is_empty() {
+                return Err(Error::InvalidData(
+                    "null property payload must be empty".into(),
+                ));
+            }
+            PropertyValue::None
+        }
         TYPE_FLOAT => {
             if payload.len() < 8 {
                 return Err(Error::InvalidData("f64 property truncated".into()));

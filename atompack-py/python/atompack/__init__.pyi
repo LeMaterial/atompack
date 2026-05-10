@@ -315,7 +315,7 @@ class Molecule:
         """
         ...
 
-    def get_property(self, key: str) -> float | int | str | npt.NDArray:
+    def get_property(self, key: str) -> float | int | str | npt.NDArray | None:
         """
         Get a custom property by key.
 
@@ -326,7 +326,7 @@ class Molecule:
 
         Returns
         -------
-        float, int, str, or ndarray
+        float, int, str, ndarray, or None
             Property value
 
         Raises
@@ -336,11 +336,11 @@ class Molecule:
         """
         ...
 
-    def set_property(self, key: str, value: float | int | str | npt.NDArray) -> None:
+    def set_property(self, key: str, value: float | int | str | npt.NDArray | None) -> None:
         """
         Set a custom property.
 
-        Supported types: float, int, str, 1D float32/float64/int32/int64 arrays,
+        Supported types: None, float, int, str, 1D float32/float64/int32/int64 arrays,
         and 2D float32/float64 arrays with shape (n, 3). Input dtype is preserved.
         The key 'stress' is reserved; use the dedicated ``stress`` property instead.
 
@@ -348,7 +348,7 @@ class Molecule:
         ----------
         key : str
             Property key
-        value : float, int, str, or ndarray
+        value : float, int, str, ndarray, or None
             Property value
 
         Raises

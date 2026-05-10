@@ -169,6 +169,7 @@ def test_molecule_custom_properties() -> None:
     mol.set_property("int_vec32", np.array([3, 4], dtype=np.int32))
     mol.set_property("vec3", np.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]], dtype=np.float32))
     mol.set_property("vec3_f64", np.array([[1.1, 1.2, 1.3], [2.1, 2.2, 2.3]], dtype=np.float64))
+    mol.set_property("optional_label", None)
     mol.stress = np.eye(3, dtype=np.float64) * 3.0
 
     assert mol.get_property("temperature") == pytest.approx(300.0)
@@ -208,10 +209,12 @@ def test_molecule_custom_properties() -> None:
     np.testing.assert_allclose(
         vec3_f64, np.array([[1.1, 1.2, 1.3], [2.1, 2.2, 2.3]], dtype=np.float64)
     )
+    assert mol.get_property("optional_label") is None
 
     np.testing.assert_allclose(mol.stress, np.eye(3, dtype=np.float64) * 3.0)
 
     assert mol.has_property("method") is True
+    assert mol.has_property("optional_label") is True
     assert mol.has_property("stress") is False
     assert set(mol.property_keys()) >= {
         "temperature",
@@ -223,6 +226,7 @@ def test_molecule_custom_properties() -> None:
         "int_vec32",
         "vec3",
         "vec3_f64",
+        "optional_label",
     }
 
     with pytest.raises(KeyError, match=r"not found"):

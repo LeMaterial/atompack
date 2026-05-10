@@ -87,6 +87,7 @@ def test_from_ase_extracts_core_fields() -> None:
             "int_vec32": np.array([3, 4], dtype=np.int32),
             "vec3": np.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]], dtype=np.float32),
             "vec3_f64": np.array([[1.0, 1.1, 1.2], [2.0, 2.1, 2.2]], dtype=np.float64),
+            "nullable": None,
             "stress": np.array(
                 [[1.1, 1.2, 1.3], [2.1, 2.2, 2.3], [3.1, 3.2, 3.3]], dtype=np.float64
             ),
@@ -126,6 +127,7 @@ def test_from_ase_extracts_core_fields() -> None:
     np.testing.assert_allclose(
         mol.get_property("vec3_f64"), np.array([[1.0, 1.1, 1.2], [2.0, 2.1, 2.2]], dtype=np.float64)
     )
+    assert mol.get_property("nullable") is None
     np.testing.assert_allclose(
         mol.stress,
         np.array([[1.1, 1.2, 1.3], [2.1, 2.2, 2.3], [3.1, 3.2, 3.3]], dtype=np.float64),

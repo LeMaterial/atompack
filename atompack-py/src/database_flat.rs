@@ -368,6 +368,9 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
                         }
 
                         if schema_entry.slot_bytes == 0 {
+                            if schema_entry.type_tag == TYPE_NONE {
+                                continue;
+                            }
                             if let Some(ref mtx) = string_mutexes[section_idx] {
                                 let val = Some(
                                     std::str::from_utf8(sec.payload)
@@ -449,6 +452,9 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
                         }
 
                         if schema_entry.slot_bytes == 0 {
+                            if schema_entry.type_tag == TYPE_NONE {
+                                continue;
+                            }
                             if let Some(ref mtx) = string_mutexes[section_idx] {
                                 let val = Some(
                                     std::str::from_utf8(sec.payload)

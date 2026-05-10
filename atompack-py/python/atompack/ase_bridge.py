@@ -21,6 +21,7 @@ _BUILTIN_FIELDS = {
 _ASE_RESERVED_ARRAYS = {"numbers", "positions"}
 _ASE_TYPES = None
 _CALC_MODES = {"singlepoint", "nocopy", "none"}
+_UNSUPPORTED_PROPERTY = object()
 
 
 def _voigt6_to_mat3x3(stress):
@@ -53,6 +54,8 @@ def _get_stress(atoms):
 
 
 def _coerce_property(value, n_atoms):
+    if value is None:
+        return None
     if isinstance(value, (str, bool, int, float, np.integer, np.floating)):
         if isinstance(value, str):
             return value
@@ -76,7 +79,7 @@ def _coerce_property(value, n_atoms):
         if arr.dtype == np.float32:
             return arr.astype(np.float32, copy=False)
         return arr.astype(np.float64, copy=False)
-    return None
+    return _UNSUPPORTED_PROPERTY
 
 
 def _merge_properties(properties, builtins, values, n_atoms):
@@ -93,7 +96,7 @@ def _merge_properties(properties, builtins, values, n_atoms):
                     builtins["stress"] = arr.astype(np.float64, copy=False)
             continue
         coerced = _coerce_property(value, n_atoms)
-        if coerced is not None:
+        if coerced is not _UNSUPPORTED_PROPERTY:
             properties[key] = coerced
 
 
@@ -187,7 +190,7 @@ def _extract_ase_record(
             if key in _ASE_RESERVED_ARRAYS or key in _BUILTIN_FIELDS:
                 continue
             coerced = _coerce_property(value, n_atoms)
-            if coerced is not None:
+            if coerced is not _UNSUPPORTED_PROPERTY:
                 properties[key] = coerced
 
     calc = getattr(atoms, "calc", None)
@@ -196,7 +199,7 @@ def _extract_ase_record(
         for key, value in results.items():
             if key not in _BUILTIN_FIELDS:
                 coerced = _coerce_property(value, n_atoms)
-                if coerced is not None:
+                if coerced is not _UNSUPPORTED_PROPERTY:
                     properties[key] = coerced
 
     if copy_info and getattr(atoms, "info", None):

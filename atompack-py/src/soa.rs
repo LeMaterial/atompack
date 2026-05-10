@@ -150,6 +150,7 @@ pub(crate) fn section_schema_from_ref(
 ) -> atompack::Result<SectionSchema> {
     let per_atom = is_per_atom(section.kind, section.key, section.type_tag);
     let elem_bytes = match section.type_tag {
+        TYPE_NONE => 0,
         TYPE_STRING => 0,
         tag if per_atom => {
             let elem_bytes = type_tag_elem_bytes(tag);
@@ -168,7 +169,7 @@ pub(crate) fn section_schema_from_ref(
         TYPE_MAT3X3_F64 => 72,
         _ => section.payload.len(),
     };
-    let slot_bytes = if section.type_tag == TYPE_STRING {
+    let slot_bytes = if matches!(section.type_tag, TYPE_STRING | TYPE_NONE) {
         0
     } else if per_atom {
         elem_bytes
@@ -196,6 +197,15 @@ pub(crate) fn validate_section_payload(
     n_atoms: usize,
 ) -> atompack::Result<()> {
     match section.type_tag {
+        TYPE_NONE => {
+            if !section.payload.is_empty() {
+                return Err(invalid_data(format!(
+                    "Section '{}' has invalid payload length {} (expected 0)",
+                    section.key,
+                    section.payload.len()
+                )));
+            }
+        }
         TYPE_STRING => {
             std::str::from_utf8(section.payload)
                 .map_err(|_| invalid_data(format!("Invalid UTF-8 in section '{}'", section.key)))?;
@@ -254,6 +264,7 @@ pub(crate) fn validate_section_payload(
 /// Element size in bytes for a given type tag. Returns 0 for variable-length types.
 pub(crate) fn type_tag_elem_bytes(tag: u8) -> usize {
     match tag {
+        TYPE_NONE => 0,
         TYPE_FLOAT => 8,
         TYPE_INT => 8,
         TYPE_STRING => 0,
@@ -289,7 +300,7 @@ fn database_schema_section(
     n_atoms: usize,
 ) -> PyResult<DatabaseSchemaSection> {
     let per_atom = is_per_atom(kind, key, type_tag);
-    let elem_bytes = if type_tag == TYPE_STRING {
+    let elem_bytes = if matches!(type_tag, TYPE_STRING | TYPE_NONE) {
         0
     } else {
         let elem_bytes = type_tag_elem_bytes(type_tag);
@@ -301,7 +312,7 @@ fn database_schema_section(
         }
         elem_bytes
     };
-    let slot_bytes = if type_tag == TYPE_STRING {
+    let slot_bytes = if matches!(type_tag, TYPE_STRING | TYPE_NONE) {
         0
     } else if per_atom {
         let expected = n_atoms.checked_mul(elem_bytes).ok_or_else(|| {
@@ -1096,6 +1107,12 @@ fn decode_mat3x3_f32(payload: &[u8]) -> PyResult<[[f32; 3]; 3]> {
 
 fn decode_property_value(type_tag: u8, payload: &[u8]) -> PyResult<PropertyValue> {
     Ok(match type_tag {
+        TYPE_NONE => {
+            if !payload.is_empty() {
+                return Err(PyValueError::new_err("Null property payload must be empty"));
+            }
+            PropertyValue::None
+        }
         TYPE_FLOAT => PropertyValue::Float(read_f64_scalar(payload)?),
         TYPE_INT => PropertyValue::Int(read_i64_scalar(payload)?),
         TYPE_STRING => PropertyValue::String(

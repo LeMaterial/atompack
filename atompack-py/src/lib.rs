@@ -113,6 +113,7 @@ const TYPE_BOOL3: u8 = 9;
 const TYPE_MAT3X3_F64: u8 = 10;
 const TYPE_FLOAT32: u8 = 11;
 const TYPE_MAT3X3_F32: u8 = 12;
+const TYPE_NONE: u8 = 13;
 
 const RECORD_FORMAT_SOA_V2: u32 = 2;
 const RECORD_FORMAT_SOA_V3: u32 = 3;

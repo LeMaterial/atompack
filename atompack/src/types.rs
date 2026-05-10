@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PropertyValue {
+    None,
     Float(f64),
     Int(i64),
     String(String),

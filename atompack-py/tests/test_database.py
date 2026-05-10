@@ -20,6 +20,7 @@ def _make_molecule(energy: float) -> atompack.Molecule:
     mol.velocities = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
     mol.cell = np.eye(3, dtype=np.float64) * 2.0
     mol.set_property("tag", "train")
+    mol.set_property("optional", None)
     mol.set_property("ids", np.array([1, 2], dtype=np.int64))
     return mol
 
@@ -48,6 +49,7 @@ def test_database_roundtrip(tmp_path: Path, compression: str) -> None:
     np.testing.assert_allclose(mol1_r.velocities, mol1.velocities)
     np.testing.assert_allclose(mol1_r.cell, mol1.cell)
     assert mol1_r.get_property("tag") == "train"
+    assert mol1_r.get_property("optional") is None
     np.testing.assert_array_equal(mol1_r.get_property("ids"), np.array([1, 2], dtype=np.int64))
 
     batch = db2.get_molecules([0, 1])
