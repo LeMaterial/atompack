@@ -21,6 +21,8 @@ pytestmark = [
 N_MOLECULES = int(os.environ.get("ATOMPACK_PY_PERF_N_MOLECULES", "10000"))
 ATOMS_PER_MOLECULE = int(os.environ.get("ATOMPACK_PY_PERF_ATOMS_PER_MOLECULE", "64"))
 READ_SAMPLE = int(os.environ.get("ATOMPACK_PY_PERF_READ_SAMPLE", "5000"))
+READ_BATCH = int(os.environ.get("ATOMPACK_PY_PERF_READ_BATCH", "1024"))
+WRITE_OBJECT_BATCH = int(os.environ.get("ATOMPACK_PY_PERF_WRITE_OBJECT_BATCH", "512"))
 
 
 def _color(code: str, text: str) -> str:
@@ -74,12 +76,15 @@ def _print_metric(label: str, value: float, threshold_env: str, default: float) 
 
 def _print_report(
     *,
-    write_mol_s: float,
+    write_arrays_mol_s: float,
+    write_objects_mol_s: float,
     sequential_read_mol_s: float,
     shuffled_read_mol_s: float,
+    batch_read_mol_s: float,
     flat_read_mol_s: float,
     read_sample: int,
-    file_size_bytes: int,
+    builtin_file_size_bytes: int,
+    object_file_size_bytes: int,
 ) -> None:
     print()
     print(_cyan("Atompack Python Throughput Smoke"))
@@ -88,7 +93,11 @@ def _print_report(
         "compression=none, props=builtin+custom"
     )
     print(
-        f"  reads: sample={read_sample:,}, file_size={file_size_bytes:,} bytes, extension=release"
+        "  reads: "
+        f"sample={read_sample:,}, "
+        f"builtin_file_size={builtin_file_size_bytes:,} bytes, "
+        f"object_file_size={object_file_size_bytes:,} bytes, "
+        "extension=release"
     )
     print(f"  {_yellow('small warm-cache smoke test; not a publication benchmark')}")
     print()
@@ -97,7 +106,18 @@ def _print_report(
         f"{'floor':>16}  {'status':<13} env override"
     )
     print(f"  {'-' * 105}")
-    _print_metric("write add_arrays_batch", write_mol_s, "ATOMPACK_PY_MIN_WRITE_MOL_S", 10_000.0)
+    _print_metric(
+        "write add_arrays_batch",
+        write_arrays_mol_s,
+        "ATOMPACK_PY_MIN_WRITE_ARRAYS_MOL_S",
+        10_000.0,
+    )
+    _print_metric(
+        "write add_molecules",
+        write_objects_mol_s,
+        "ATOMPACK_PY_MIN_WRITE_OBJECTS_MOL_S",
+        5_000.0,
+    )
     _print_metric(
         "sequential get_molecule",
         sequential_read_mol_s,
@@ -108,6 +128,12 @@ def _print_report(
         "shuffled get_molecule",
         shuffled_read_mol_s,
         "ATOMPACK_PY_MIN_SHUFFLED_READ_MOL_S",
+        50_000.0,
+    )
+    _print_metric(
+        "batch get_molecules",
+        batch_read_mol_s,
+        "ATOMPACK_PY_MIN_BATCH_READ_MOL_S",
         50_000.0,
     )
     _print_metric(
@@ -195,25 +221,71 @@ def _synthetic_arrays() -> dict[str, object]:
     }
 
 
+def _synthetic_molecules(arrays: dict[str, object]) -> list[atompack.Molecule]:
+    positions = arrays["positions"]
+    atomic_numbers = arrays["atomic_numbers"]
+    energy = arrays["energy"]
+    forces = arrays["forces"]
+    cell = arrays["cell"]
+    pbc = arrays["pbc"]
+    properties = arrays["properties"]
+    atom_properties = arrays["atom_properties"]
+
+    molecules: list[atompack.Molecule] = []
+    for index in range(N_MOLECULES):
+        molecule = atompack.Molecule.from_arrays(
+            positions[index],
+            atomic_numbers[index],
+            energy=float(energy[index]),
+            forces=forces[index],
+            cell=cell[index],
+            pbc=tuple(bool(value) for value in pbc[index]),
+        )
+        for key, values in properties.items():
+            molecule.set_property(key, values[index])
+        for key, values in atom_properties.items():
+            molecule.set_property(key, values[index])
+        molecules.append(molecule)
+    return molecules
+
+
 def _touch_molecule(molecule: atompack.Molecule, seed: int) -> None:
     _ = float(molecule.positions[seed % len(molecule.positions), seed % 3])
     _ = float(molecule.forces[seed % len(molecule.forces), seed % 3])
     _ = molecule.energy
 
 
+def _touch_batch(molecules: list[atompack.Molecule], seed: int) -> None:
+    for offset, molecule in enumerate(molecules):
+        _touch_molecule(molecule, seed + offset)
+
+
 def test_atompack_python_throughput_smoke(tmp_path: Path) -> None:
     arrays = _synthetic_arrays()
-    path = tmp_path / "throughput-smoke.atp"
+    # Prebuild molecules so the add_molecules metric stays focused on DB write throughput.
+    molecules = _synthetic_molecules(arrays)
+    builtin_path = tmp_path / "throughput-smoke-builtin.atp"
+    object_path = tmp_path / "throughput-smoke-object.atp"
 
     start = time.perf_counter()
-    db = atompack.Database(str(path), compression="none", overwrite=True)
+    db = atompack.Database(str(builtin_path), compression="none", overwrite=True)
     db.add_arrays_batch(**arrays)
     db.flush()
-    write_seconds = time.perf_counter() - start
-    write_mol_s = _rate(N_MOLECULES, write_seconds)
-    file_size_bytes = path.stat().st_size
+    write_arrays_seconds = time.perf_counter() - start
+    write_arrays_mol_s = _rate(N_MOLECULES, write_arrays_seconds)
+    builtin_file_size_bytes = builtin_path.stat().st_size
 
-    db = atompack.Database.open(str(path), mmap=True)
+    start = time.perf_counter()
+    db = atompack.Database(str(object_path), compression="none", overwrite=True)
+    for offset in range(0, N_MOLECULES, WRITE_OBJECT_BATCH):
+        db.add_molecules(molecules[offset : offset + WRITE_OBJECT_BATCH])
+    db.flush()
+    write_objects_seconds = time.perf_counter() - start
+    write_objects_mol_s = _rate(N_MOLECULES, write_objects_seconds)
+    object_file_size_bytes = object_path.stat().st_size
+
+    db = atompack.Database.open(str(builtin_path), mmap=True)
+    batch_db = atompack.Database.open(str(object_path), mmap=True)
     seq_indices = list(range(min(READ_SAMPLE, N_MOLECULES)))
     rng = np.random.default_rng(12_345)
     shuffled_indices = rng.integers(
@@ -222,6 +294,7 @@ def test_atompack_python_throughput_smoke(tmp_path: Path) -> None:
         size=min(READ_SAMPLE, N_MOLECULES),
         dtype=np.int64,
     ).tolist()
+    batch_indices = shuffled_indices[: min(READ_BATCH, len(shuffled_indices))]
 
     def read_sequential_single() -> object:
         for index in seq_indices:
@@ -232,6 +305,11 @@ def test_atompack_python_throughput_smoke(tmp_path: Path) -> None:
         for index in shuffled_indices:
             _touch_molecule(db.get_molecule(index), index)
         return len(shuffled_indices)
+
+    def read_batch() -> object:
+        molecules = batch_db.get_molecules(batch_indices)
+        _touch_batch(molecules, batch_indices[0] if batch_indices else 0)
+        return molecules
 
     def read_flat() -> object:
         batch = db.get_molecules_flat(seq_indices)
@@ -246,6 +324,7 @@ def test_atompack_python_throughput_smoke(tmp_path: Path) -> None:
         read_shuffled_single,
         units_per_call=len(shuffled_indices),
     )
+    batch_read_mol_s = _measure_repeated(read_batch, units_per_call=len(batch_indices))
     flat_read_mol_s = _measure_repeated(read_flat, units_per_call=len(seq_indices))
 
     print(
@@ -253,22 +332,35 @@ def test_atompack_python_throughput_smoke(tmp_path: Path) -> None:
         f"n_molecules={N_MOLECULES} "
         f"atoms_per_molecule={ATOMS_PER_MOLECULE} "
         f"read_sample={len(seq_indices)} "
-        f"write_mol_s={write_mol_s:.0f} "
+        f"write_arrays_mol_s={write_arrays_mol_s:.0f} "
+        f"write_objects_mol_s={write_objects_mol_s:.0f} "
         f"sequential_read_mol_s={sequential_read_mol_s:.0f} "
         f"shuffled_read_mol_s={shuffled_read_mol_s:.0f} "
+        f"batch_read_mol_s={batch_read_mol_s:.0f} "
         f"flat_read_mol_s={flat_read_mol_s:.0f} "
-        f"file_size_bytes={file_size_bytes}"
+        f"builtin_file_size_bytes={builtin_file_size_bytes} "
+        f"object_file_size_bytes={object_file_size_bytes}"
     )
     _print_report(
-        write_mol_s=write_mol_s,
+        write_arrays_mol_s=write_arrays_mol_s,
+        write_objects_mol_s=write_objects_mol_s,
         sequential_read_mol_s=sequential_read_mol_s,
         shuffled_read_mol_s=shuffled_read_mol_s,
+        batch_read_mol_s=batch_read_mol_s,
         flat_read_mol_s=flat_read_mol_s,
         read_sample=len(seq_indices),
-        file_size_bytes=file_size_bytes,
+        builtin_file_size_bytes=builtin_file_size_bytes,
+        object_file_size_bytes=object_file_size_bytes,
     )
 
-    assert write_mol_s >= _threshold("ATOMPACK_PY_MIN_WRITE_MOL_S", 10_000.0)
+    assert write_arrays_mol_s >= _threshold(
+        "ATOMPACK_PY_MIN_WRITE_ARRAYS_MOL_S",
+        10_000.0,
+    )
+    assert write_objects_mol_s >= _threshold(
+        "ATOMPACK_PY_MIN_WRITE_OBJECTS_MOL_S",
+        5_000.0,
+    )
     assert sequential_read_mol_s >= _threshold(
         "ATOMPACK_PY_MIN_SEQUENTIAL_READ_MOL_S",
         50_000.0,
@@ -277,4 +369,5 @@ def test_atompack_python_throughput_smoke(tmp_path: Path) -> None:
         "ATOMPACK_PY_MIN_SHUFFLED_READ_MOL_S",
         50_000.0,
     )
+    assert batch_read_mol_s >= _threshold("ATOMPACK_PY_MIN_BATCH_READ_MOL_S", 50_000.0)
     assert flat_read_mol_s >= _threshold("ATOMPACK_PY_MIN_FLAT_READ_MOL_S", 50_000.0)
