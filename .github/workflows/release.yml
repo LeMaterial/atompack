@@ -18,6 +18,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Pinned because manylinux2014_x86_64:latest no longer ships cp38.
+  MANYLINUX2014_X86_64_IMAGE: quay.io/pypa/manylinux2014_x86_64@sha256:66d0049056d8744efef8f7e973d07acd548a28cda5cf5f6e4040847e34e3bbcc
+
 jobs:
   validate-version:
     name: Validate tag version
@@ -142,14 +146,24 @@ jobs:
           else
             echo "PYBIN=python" >> "$GITHUB_ENV"
           fi
-      - name: Build wheels
+      - name: Build wheels (Linux)
+        if: matrix.os == 'ubuntu-latest'
         uses: PyO3/maturin-action@v1
         with:
           command: build
           args: --release --out dist --interpreter ${{ env.PYBIN }}
           working-directory: atompack-py
           target: ${{ env.TARGET }}
-          manylinux: auto
+          manylinux: 2_17
+          container: ${{ env.MANYLINUX2014_X86_64_IMAGE }}
+      - name: Build wheels (non-Linux)
+        if: matrix.os != 'ubuntu-latest'
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --release --out dist --interpreter ${{ env.PYBIN }}
+          working-directory: atompack-py
+          target: ${{ env.TARGET }}
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ env.TARGET }}-py${{ matrix.python-version }}
