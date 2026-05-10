@@ -87,6 +87,7 @@ def test_from_ase_extracts_core_fields() -> None:
             "int_vec32": np.array([3, 4], dtype=np.int32),
             "vec3": np.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]], dtype=np.float32),
             "vec3_f64": np.array([[1.0, 1.1, 1.2], [2.0, 2.1, 2.2]], dtype=np.float64),
+            "nullable": None,
             "stress": np.array(
                 [[1.1, 1.2, 1.3], [2.1, 2.2, 2.3], [3.1, 3.2, 3.3]], dtype=np.float64
             ),
@@ -126,6 +127,7 @@ def test_from_ase_extracts_core_fields() -> None:
     np.testing.assert_allclose(
         mol.get_property("vec3_f64"), np.array([[1.0, 1.1, 1.2], [2.0, 2.1, 2.2]], dtype=np.float64)
     )
+    assert mol.get_property("nullable") is None
     np.testing.assert_allclose(
         mol.stress,
         np.array([[1.1, 1.2, 1.3], [2.1, 2.2, 2.3], [3.1, 3.2, 3.3]], dtype=np.float64),
@@ -358,6 +360,22 @@ def test_to_ase_owned_maps_builtins_and_properties() -> None:
     np.testing.assert_allclose(atoms.calc.results["stress"], mol.stress)
     assert atoms.info["temperature"] == pytest.approx(300.0)
     np.testing.assert_array_equal(atoms.arrays["tags"], np.array([3, 4], dtype=np.int32))
+
+
+def test_to_ase_roundtrip_preserves_none_custom_property() -> None:
+    mol = atompack.Molecule.from_arrays(
+        np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
+        np.array([1], dtype=np.uint8),
+    )
+    mol.set_property("nullable", None)
+
+    atoms = mol.to_ase()
+    assert "nullable" in atoms.info
+    assert atoms.info["nullable"] is None
+
+    roundtrip = atompack.from_ase(atoms)
+    assert roundtrip.has_property("nullable") is True
+    assert roundtrip.get_property("nullable") is None
 
 
 def test_to_ase_calc_modes() -> None:

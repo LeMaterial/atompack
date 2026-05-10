@@ -374,6 +374,7 @@ pub(super) fn property_value_to_pyobject(
     value: &PropertyValue,
 ) -> PyResult<Py<PyAny>> {
     Ok(match value {
+        PropertyValue::None => py.None(),
         PropertyValue::Float(v) => into_py_any(py, *v)?,
         PropertyValue::Int(v) => into_py_any(py, *v)?,
         PropertyValue::String(v) => into_py_any(py, v)?,
@@ -411,6 +412,12 @@ pub(super) fn property_section_to_pyobject<'py>(
         Ok(payload.len() / stride)
     };
     Ok(match section.type_tag {
+        TYPE_NONE => {
+            if !payload.is_empty() {
+                return Err(PyValueError::new_err("Null property payload must be empty"));
+            }
+            py.None()
+        }
         TYPE_FLOAT => into_py_any(py, read_f64_scalar(payload)?)?,
         TYPE_INT => into_py_any(py, read_i64_scalar(payload)?)?,
         TYPE_STRING => into_py_any(
@@ -448,6 +455,7 @@ pub(super) fn property_section_to_pyobject<'py>(
 
 fn property_value_is_atom_array(value: &PropertyValue, n_atoms: usize) -> bool {
     match value {
+        PropertyValue::None => false,
         PropertyValue::FloatArray(values) => values.len() == n_atoms,
         PropertyValue::Vec3Array(values) => values.len() == n_atoms,
         PropertyValue::IntArray(values) => values.len() == n_atoms,

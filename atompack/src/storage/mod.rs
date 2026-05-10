@@ -79,6 +79,7 @@ const TYPE_BOOL3: u8 = 9; // [bool; 3]
 const TYPE_MAT3X3_F64: u8 = 10; // [[f64; 3]; 3]
 const TYPE_FLOAT32: u8 = 11; // f32 scalar
 const TYPE_MAT3X3_F32: u8 = 12; // [[f32; 3]; 3]
+const TYPE_NONE: u8 = 13; // explicit null property
 
 // Two redundant page-aligned header slots for crash safety.
 const HEADER_SLOT_SIZE: usize = 4096;
@@ -1425,6 +1426,8 @@ mod tests {
             "i32arr".to_string(),
             PropertyValue::Int32Array(vec![100, -200]),
         );
+        mol.properties
+            .insert("none_val".to_string(), PropertyValue::None);
 
         {
             let mut db = AtomDatabase::create(&path, CompressionType::Lz4).unwrap();
@@ -1463,7 +1466,7 @@ mod tests {
         }
 
         // Verify properties
-        assert_eq!(r.properties.len(), 9);
+        assert_eq!(r.properties.len(), 10);
         match r.properties.get("scalar_f").unwrap() {
             PropertyValue::Float(v) => assert_eq!(*v, 99.9),
             other => panic!("expected Float, got {:?}", other),
@@ -1475,6 +1478,10 @@ mod tests {
         match r.properties.get("str_val").unwrap() {
             PropertyValue::String(v) => assert_eq!(v, "hello"),
             other => panic!("expected String, got {:?}", other),
+        }
+        match r.properties.get("none_val").unwrap() {
+            PropertyValue::None => {}
+            other => panic!("expected None, got {:?}", other),
         }
     }
 

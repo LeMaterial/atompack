@@ -125,6 +125,7 @@ pub(super) fn decode_schema_lock(bytes: &[u8]) -> Result<SchemaLock> {
 
 fn schema_type_tag_elem_bytes(tag: u8) -> Result<usize> {
     match tag {
+        TYPE_NONE => Ok(0),
         TYPE_FLOAT => Ok(8),
         TYPE_INT => Ok(8),
         TYPE_STRING => Ok(0),
@@ -163,7 +164,7 @@ fn schema_entry(
 ) -> Result<SchemaEntry> {
     let per_atom = schema_is_per_atom(kind, key);
     let elem_bytes = schema_type_tag_elem_bytes(type_tag)?;
-    let slot_bytes = if type_tag == TYPE_STRING {
+    let slot_bytes = if matches!(type_tag, TYPE_STRING | TYPE_NONE) {
         0
     } else if per_atom {
         match type_tag {
