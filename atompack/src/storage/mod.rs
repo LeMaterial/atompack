@@ -424,7 +424,7 @@ impl AtomDatabase {
     fn resolved_record_format_for_schema(&self, schema: &SchemaLock) -> Result<u32> {
         match validate_schema_lock_for_record_format(self.record_format, schema) {
             Ok(()) => Ok(self.record_format),
-            Err(current_err) if self.can_promote_record_format() => {
+            Err(_) if self.can_promote_record_format() => {
                 validate_schema_lock_for_record_format(RECORD_FORMAT_SOA_V3, schema)?;
                 Ok(RECORD_FORMAT_SOA_V3)
             }
@@ -448,7 +448,7 @@ impl AtomDatabase {
             let hint = positions_type_hint.or(lock.positions_type);
             let record = match record_schema(bytes, record_format, hint) {
                 Ok(record) => record,
-                Err(current_err) if can_promote && record_format == RECORD_FORMAT_SOA_V2 => {
+                Err(_) if can_promote && record_format == RECORD_FORMAT_SOA_V2 => {
                     let record = record_schema(bytes, RECORD_FORMAT_SOA_V3, hint)?;
                     record_format = RECORD_FORMAT_SOA_V3;
                     record
