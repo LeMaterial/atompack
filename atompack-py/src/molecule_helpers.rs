@@ -152,6 +152,62 @@ fn write_soa_section_raw(
     Ok(())
 }
 
+#[inline]
+fn account_optional_typed_section(
+    count: &mut usize,
+    payload_bytes: &mut usize,
+    section_overhead: &mut usize,
+    key: &str,
+    payload: Option<&SoaTypedPayload<'_>>,
+) {
+    if let Some(payload) = payload {
+        *count += 1;
+        *payload_bytes += payload.payload.len();
+        *section_overhead += 1 + 1 + key.len() + 1 + 4;
+    }
+}
+
+#[inline]
+fn account_optional_string_section(
+    count: &mut usize,
+    payload_bytes: &mut usize,
+    section_overhead: &mut usize,
+    key: &str,
+    value: Option<&str>,
+) {
+    if let Some(value) = value {
+        *count += 1;
+        *payload_bytes += value.len();
+        *section_overhead += 1 + 1 + key.len() + 1 + 4;
+    }
+}
+
+#[inline]
+fn write_optional_typed_section(
+    buf: &mut Vec<u8>,
+    kind: u8,
+    key: &str,
+    payload: Option<&SoaTypedPayload<'_>>,
+) -> Result<(), String> {
+    if let Some(payload) = payload {
+        write_soa_section_raw(buf, kind, key, payload.type_tag, payload.payload)?;
+    }
+    Ok(())
+}
+
+#[inline]
+fn write_optional_string_section(
+    buf: &mut Vec<u8>,
+    kind: u8,
+    key: &str,
+    value: Option<&str>,
+) -> Result<(), String> {
+    if let Some(value) = value {
+        write_soa_section_raw(buf, kind, key, TYPE_STRING, value.as_bytes())?;
+    }
+    Ok(())
+}
+
 pub(crate) fn build_soa_record_unchecked(
     positions_type: u8,
     positions: &[u8],
@@ -185,38 +241,64 @@ pub(crate) fn build_soa_record_unchecked(
     let mut payload_bytes = 0usize;
     let mut section_overhead = 0usize;
     let mut section_count = 0usize;
-    let mut account_section = |key: &str, payload: &[u8]| {
+    account_optional_typed_section(
+        &mut section_count,
+        &mut payload_bytes,
+        &mut section_overhead,
+        "charges",
+        builtins.charges.as_ref(),
+    );
+    account_optional_typed_section(
+        &mut section_count,
+        &mut payload_bytes,
+        &mut section_overhead,
+        "cell",
+        builtins.cell.as_ref(),
+    );
+    account_optional_typed_section(
+        &mut section_count,
+        &mut payload_bytes,
+        &mut section_overhead,
+        "energy",
+        builtins.energy.as_ref(),
+    );
+    account_optional_typed_section(
+        &mut section_count,
+        &mut payload_bytes,
+        &mut section_overhead,
+        "forces",
+        builtins.forces.as_ref(),
+    );
+    account_optional_string_section(
+        &mut section_count,
+        &mut payload_bytes,
+        &mut section_overhead,
+        "name",
+        builtins.name,
+    );
+    if builtins.pbc.is_some() {
         section_count += 1;
-        payload_bytes += payload.len();
-        section_overhead += 1 + 1 + key.len() + 1 + 4;
-    };
-
-    if let Some(payload) = builtins.charges.as_ref() {
-        account_section("charges", payload.payload);
+        payload_bytes += 3;
+        section_overhead += 1 + 1 + "pbc".len() + 1 + 4;
     }
-    if let Some(payload) = builtins.cell.as_ref() {
-        account_section("cell", payload.payload);
-    }
-    if let Some(payload) = builtins.energy.as_ref() {
-        account_section("energy", payload.payload);
-    }
-    if let Some(payload) = builtins.forces.as_ref() {
-        account_section("forces", payload.payload);
-    }
-    if let Some(name) = builtins.name {
-        account_section("name", name.as_bytes());
-    }
-    if let Some(payload) = builtins.pbc.as_ref() {
-        account_section("pbc", payload);
-    }
-    if let Some(payload) = builtins.stress.as_ref() {
-        account_section("stress", payload.payload);
-    }
-    if let Some(payload) = builtins.velocities.as_ref() {
-        account_section("velocities", payload.payload);
-    }
+    account_optional_typed_section(
+        &mut section_count,
+        &mut payload_bytes,
+        &mut section_overhead,
+        "stress",
+        builtins.stress.as_ref(),
+    );
+    account_optional_typed_section(
+        &mut section_count,
+        &mut payload_bytes,
+        &mut section_overhead,
+        "velocities",
+        builtins.velocities.as_ref(),
+    );
     for section in custom_sections {
-        account_section(section.key, section.payload);
+        section_count += 1;
+        payload_bytes += section.payload.len();
+        section_overhead += 1 + 1 + section.key.len() + 1 + 4;
     }
 
     let n_sections: u16 = section_count
@@ -231,66 +313,21 @@ pub(crate) fn build_soa_record_unchecked(
     buf.extend_from_slice(atomic_numbers);
     buf.extend_from_slice(&n_sections.to_le_bytes());
 
-    if let Some(payload) = builtins.charges.as_ref() {
-        write_soa_section_raw(
-            &mut buf,
-            KIND_BUILTIN,
-            "charges",
-            payload.type_tag,
-            payload.payload,
-        )?;
-    }
-    if let Some(payload) = builtins.cell.as_ref() {
-        write_soa_section_raw(
-            &mut buf,
-            KIND_BUILTIN,
-            "cell",
-            payload.type_tag,
-            payload.payload,
-        )?;
-    }
-    if let Some(payload) = builtins.energy.as_ref() {
-        write_soa_section_raw(
-            &mut buf,
-            KIND_BUILTIN,
-            "energy",
-            payload.type_tag,
-            payload.payload,
-        )?;
-    }
-    if let Some(payload) = builtins.forces.as_ref() {
-        write_soa_section_raw(
-            &mut buf,
-            KIND_BUILTIN,
-            "forces",
-            payload.type_tag,
-            payload.payload,
-        )?;
-    }
-    if let Some(name) = builtins.name {
-        write_soa_section_raw(&mut buf, KIND_BUILTIN, "name", TYPE_STRING, name.as_bytes())?;
-    }
+    write_optional_typed_section(&mut buf, KIND_BUILTIN, "charges", builtins.charges.as_ref())?;
+    write_optional_typed_section(&mut buf, KIND_BUILTIN, "cell", builtins.cell.as_ref())?;
+    write_optional_typed_section(&mut buf, KIND_BUILTIN, "energy", builtins.energy.as_ref())?;
+    write_optional_typed_section(&mut buf, KIND_BUILTIN, "forces", builtins.forces.as_ref())?;
+    write_optional_string_section(&mut buf, KIND_BUILTIN, "name", builtins.name)?;
     if let Some(payload) = builtins.pbc.as_ref() {
         write_soa_section_raw(&mut buf, KIND_BUILTIN, "pbc", TYPE_BOOL3, payload)?;
     }
-    if let Some(payload) = builtins.stress.as_ref() {
-        write_soa_section_raw(
-            &mut buf,
-            KIND_BUILTIN,
-            "stress",
-            payload.type_tag,
-            payload.payload,
-        )?;
-    }
-    if let Some(payload) = builtins.velocities.as_ref() {
-        write_soa_section_raw(
-            &mut buf,
-            KIND_BUILTIN,
-            "velocities",
-            payload.type_tag,
-            payload.payload,
-        )?;
-    }
+    write_optional_typed_section(&mut buf, KIND_BUILTIN, "stress", builtins.stress.as_ref())?;
+    write_optional_typed_section(
+        &mut buf,
+        KIND_BUILTIN,
+        "velocities",
+        builtins.velocities.as_ref(),
+    )?;
     for section in custom_sections {
         write_soa_section_raw(
             &mut buf,

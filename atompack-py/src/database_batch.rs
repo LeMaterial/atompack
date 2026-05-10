@@ -919,6 +919,28 @@ fn extract_builtin_scalar_column<T: Element + Copy + bytemuck::NoUninit>(
     })
 }
 
+fn extract_optional_builtin_scalar_column(
+    value: Option<&Bound<'_, PyAny>>,
+    batch: usize,
+    key: &str,
+    f32_type_tag: u8,
+    f64_type_tag: u8,
+) -> PyResult<Option<BatchSectionColumn>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let Some(array) = PyFloatArray1::from_any(value) else {
+        return Err(PyValueError::new_err(format!(
+            "{} must be a float32 or float64 ndarray with shape (batch,)",
+            key
+        )));
+    };
+    Ok(Some(match array {
+        PyFloatArray1::F32(arr) => extract_builtin_scalar_column(&arr, batch, key, f32_type_tag)?,
+        PyFloatArray1::F64(arr) => extract_builtin_scalar_column(&arr, batch, key, f64_type_tag)?,
+    }))
+}
+
 fn extract_builtin_float_array_column<T: Element + Copy + bytemuck::NoUninit>(
     arr: &Bound<'_, PyArray2<T>>,
     batch: usize,
@@ -945,6 +967,33 @@ fn extract_builtin_float_array_column<T: Element + Copy + bytemuck::NoUninit>(
         payload: bytemuck::cast_slice::<T, u8>(slice).to_vec(),
         strings: None,
     })
+}
+
+fn extract_optional_builtin_float_array_column(
+    value: Option<&Bound<'_, PyAny>>,
+    batch: usize,
+    n_atoms: usize,
+    key: &str,
+    f32_type_tag: u8,
+    f64_type_tag: u8,
+) -> PyResult<Option<BatchSectionColumn>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let Some(array) = PyFloatArray2::from_any(value) else {
+        return Err(PyValueError::new_err(format!(
+            "{} must be a float32 or float64 ndarray with shape (batch, n_atoms)",
+            key
+        )));
+    };
+    Ok(Some(match array {
+        PyFloatArray2::F32(arr) => {
+            extract_builtin_float_array_column(&arr, batch, n_atoms, key, f32_type_tag)?
+        }
+        PyFloatArray2::F64(arr) => {
+            extract_builtin_float_array_column(&arr, batch, n_atoms, key, f64_type_tag)?
+        }
+    }))
 }
 
 fn extract_builtin_vec3_column<T: Element + Copy + bytemuck::NoUninit>(
@@ -975,6 +1024,33 @@ fn extract_builtin_vec3_column<T: Element + Copy + bytemuck::NoUninit>(
     })
 }
 
+fn extract_optional_builtin_vec3_column(
+    value: Option<&Bound<'_, PyAny>>,
+    batch: usize,
+    n_atoms: usize,
+    key: &str,
+    f32_type_tag: u8,
+    f64_type_tag: u8,
+) -> PyResult<Option<BatchSectionColumn>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let Some(array) = PyFloatArray3::from_any(value) else {
+        return Err(PyValueError::new_err(format!(
+            "{} must be a float32 or float64 ndarray with shape (batch, n_atoms, 3)",
+            key
+        )));
+    };
+    Ok(Some(match array {
+        PyFloatArray3::F32(arr) => {
+            extract_builtin_vec3_column(&arr, batch, n_atoms, key, f32_type_tag)?
+        }
+        PyFloatArray3::F64(arr) => {
+            extract_builtin_vec3_column(&arr, batch, n_atoms, key, f64_type_tag)?
+        }
+    }))
+}
+
 fn extract_builtin_mat3_column<T: Element + Copy + bytemuck::NoUninit>(
     arr: &Bound<'_, PyArray3<T>>,
     batch: usize,
@@ -1000,6 +1076,28 @@ fn extract_builtin_mat3_column<T: Element + Copy + bytemuck::NoUninit>(
         payload: bytemuck::cast_slice::<T, u8>(slice).to_vec(),
         strings: None,
     })
+}
+
+fn extract_optional_builtin_mat3_column(
+    value: Option<&Bound<'_, PyAny>>,
+    batch: usize,
+    key: &str,
+    f32_type_tag: u8,
+    f64_type_tag: u8,
+) -> PyResult<Option<BatchSectionColumn>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let Some(array) = PyFloatArray3::from_any(value) else {
+        return Err(PyValueError::new_err(format!(
+            "{} must be a float32 or float64 ndarray with shape (batch, 3, 3)",
+            key
+        )));
+    };
+    Ok(Some(match array {
+        PyFloatArray3::F32(arr) => extract_builtin_mat3_column(&arr, batch, key, f32_type_tag)?,
+        PyFloatArray3::F64(arr) => extract_builtin_mat3_column(&arr, batch, key, f64_type_tag)?,
+    }))
 }
 
 fn extract_builtin_pbc_column(
@@ -1087,108 +1185,46 @@ pub(super) fn add_arrays_batch_impl(
     let (batch, n_atoms, positions_type, positions_payload) = extract_positions_payload(positions)?;
     let atomic_numbers_payload = extract_atomic_numbers_payload(atomic_numbers, batch, n_atoms)?;
 
-    let energy_column = if let Some(energy) = energy {
-        let Some(array) = PyFloatArray1::from_any(energy) else {
-            return Err(PyValueError::new_err(
-                "energy must be a float32 or float64 ndarray with shape (batch,)",
-            ));
-        };
-        Some(match array {
-            PyFloatArray1::F32(arr) => {
-                extract_builtin_scalar_column(&arr, batch, "energy", TYPE_FLOAT32)?
-            }
-            PyFloatArray1::F64(arr) => {
-                extract_builtin_scalar_column(&arr, batch, "energy", TYPE_FLOAT)?
-            }
-        })
-    } else {
-        None
-    };
-    let forces_column = if let Some(forces) = forces {
-        let Some(array) = PyFloatArray3::from_any(forces) else {
-            return Err(PyValueError::new_err(
-                "forces must be a float32 or float64 ndarray with shape (batch, n_atoms, 3)",
-            ));
-        };
-        Some(match array {
-            PyFloatArray3::F32(arr) => {
-                extract_builtin_vec3_column(&arr, batch, n_atoms, "forces", TYPE_VEC3_F32)?
-            }
-            PyFloatArray3::F64(arr) => {
-                extract_builtin_vec3_column(&arr, batch, n_atoms, "forces", TYPE_VEC3_F64)?
-            }
-        })
-    } else {
-        None
-    };
-    let charges_column = if let Some(charges) = charges {
-        let Some(array) = PyFloatArray2::from_any(charges) else {
-            return Err(PyValueError::new_err(
-                "charges must be a float32 or float64 ndarray with shape (batch, n_atoms)",
-            ));
-        };
-        Some(match array {
-            PyFloatArray2::F32(arr) => {
-                extract_builtin_float_array_column(&arr, batch, n_atoms, "charges", TYPE_F32_ARRAY)?
-            }
-            PyFloatArray2::F64(arr) => {
-                extract_builtin_float_array_column(&arr, batch, n_atoms, "charges", TYPE_F64_ARRAY)?
-            }
-        })
-    } else {
-        None
-    };
-    let velocities_column = if let Some(velocities) = velocities {
-        let Some(array) = PyFloatArray3::from_any(velocities) else {
-            return Err(PyValueError::new_err(
-                "velocities must be a float32 or float64 ndarray with shape (batch, n_atoms, 3)",
-            ));
-        };
-        Some(match array {
-            PyFloatArray3::F32(arr) => {
-                extract_builtin_vec3_column(&arr, batch, n_atoms, "velocities", TYPE_VEC3_F32)?
-            }
-            PyFloatArray3::F64(arr) => {
-                extract_builtin_vec3_column(&arr, batch, n_atoms, "velocities", TYPE_VEC3_F64)?
-            }
-        })
-    } else {
-        None
-    };
-    let cell_column = if let Some(cell) = cell {
-        let Some(array) = PyFloatArray3::from_any(cell) else {
-            return Err(PyValueError::new_err(
-                "cell must be a float32 or float64 ndarray with shape (batch, 3, 3)",
-            ));
-        };
-        Some(match array {
-            PyFloatArray3::F32(arr) => {
-                extract_builtin_mat3_column(&arr, batch, "cell", TYPE_MAT3X3_F32)?
-            }
-            PyFloatArray3::F64(arr) => {
-                extract_builtin_mat3_column(&arr, batch, "cell", TYPE_MAT3X3_F64)?
-            }
-        })
-    } else {
-        None
-    };
-    let stress_column = if let Some(stress) = stress {
-        let Some(array) = PyFloatArray3::from_any(stress) else {
-            return Err(PyValueError::new_err(
-                "stress must be a float32 or float64 ndarray with shape (batch, 3, 3)",
-            ));
-        };
-        Some(match array {
-            PyFloatArray3::F32(arr) => {
-                extract_builtin_mat3_column(&arr, batch, "stress", TYPE_MAT3X3_F32)?
-            }
-            PyFloatArray3::F64(arr) => {
-                extract_builtin_mat3_column(&arr, batch, "stress", TYPE_MAT3X3_F64)?
-            }
-        })
-    } else {
-        None
-    };
+    let energy_column =
+        extract_optional_builtin_scalar_column(energy, batch, "energy", TYPE_FLOAT32, TYPE_FLOAT)?;
+    let forces_column = extract_optional_builtin_vec3_column(
+        forces,
+        batch,
+        n_atoms,
+        "forces",
+        TYPE_VEC3_F32,
+        TYPE_VEC3_F64,
+    )?;
+    let charges_column = extract_optional_builtin_float_array_column(
+        charges,
+        batch,
+        n_atoms,
+        "charges",
+        TYPE_F32_ARRAY,
+        TYPE_F64_ARRAY,
+    )?;
+    let velocities_column = extract_optional_builtin_vec3_column(
+        velocities,
+        batch,
+        n_atoms,
+        "velocities",
+        TYPE_VEC3_F32,
+        TYPE_VEC3_F64,
+    )?;
+    let cell_column = extract_optional_builtin_mat3_column(
+        cell,
+        batch,
+        "cell",
+        TYPE_MAT3X3_F32,
+        TYPE_MAT3X3_F64,
+    )?;
+    let stress_column = extract_optional_builtin_mat3_column(
+        stress,
+        batch,
+        "stress",
+        TYPE_MAT3X3_F32,
+        TYPE_MAT3X3_F64,
+    )?;
     let pbc_column = match pbc {
         Some(pbc) => Some(extract_builtin_pbc_column(pbc, batch)?),
         None => None,
