@@ -7,6 +7,7 @@ version = "0.3.0"
 edition = "2024"
 authors = [
     "Ali Ramlaoui <ali.ramlaoui@entalpic.ai>",
+    "Daniel Speckhard <daniel.speckhard@entalpic.ai>",
     "Victor Schmidt <victor.schmidt@entalpic.ai>",
 ]
 license = "Apache-2.0"
