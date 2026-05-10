@@ -7,6 +7,10 @@ import numpy.typing as npt
 
 from . import hub as hub
 
+Float1D = npt.NDArray[np.float32] | npt.NDArray[np.float64]
+Float2D = npt.NDArray[np.float32] | npt.NDArray[np.float64]
+Float3D = npt.NDArray[np.float32] | npt.NDArray[np.float64]
+
 class Atom:
     """
     Represents a single atom with 3D coordinates and atomic number.
@@ -115,29 +119,29 @@ class Molecule:
 
     def __init__(
         self,
-        positions: npt.NDArray[np.float32],
+        positions: Float2D,
         atomic_numbers: npt.NDArray[np.uint8],
         *,
         energy: float | None = ...,
-        forces: npt.NDArray[np.float32] | None = ...,
-        charges: npt.NDArray[np.float64] | None = ...,
-        velocities: npt.NDArray[np.float32] | None = ...,
-        cell: npt.NDArray[np.float64] | None = ...,
-        stress: npt.NDArray[np.float64] | npt.NDArray[np.float32] | None = ...,
+        forces: Float2D | None = ...,
+        charges: Float1D | None = ...,
+        velocities: Float2D | None = ...,
+        cell: Float2D | None = ...,
+        stress: Float2D | None = ...,
         pbc: tuple[bool, bool, bool] | None = ...,
         name: str | None = ...,
     ) -> None: ...
     @staticmethod
     def from_arrays(
-        positions: npt.NDArray[np.float32],
+        positions: Float2D,
         atomic_numbers: npt.NDArray[np.uint8],
         *,
         energy: float | None = ...,
-        forces: npt.NDArray[np.float32] | None = ...,
-        charges: npt.NDArray[np.float64] | None = ...,
-        velocities: npt.NDArray[np.float32] | None = ...,
-        cell: npt.NDArray[np.float64] | None = ...,
-        stress: npt.NDArray[np.float64] | npt.NDArray[np.float32] | None = ...,
+        forces: Float2D | None = ...,
+        charges: Float1D | None = ...,
+        velocities: Float2D | None = ...,
+        cell: Float2D | None = ...,
+        stress: Float2D | None = ...,
         pbc: tuple[bool, bool, bool] | None = ...,
         name: str | None = ...,
     ) -> Molecule:
@@ -204,7 +208,7 @@ class Molecule:
         ...
 
     @property
-    def forces(self) -> npt.NDArray[np.float32] | None:
+    def forces(self) -> Float2D | None:
         """
         Per-atom forces.
 
@@ -216,7 +220,7 @@ class Molecule:
         ...
 
     @forces.setter
-    def forces(self, value: npt.NDArray[np.float32]) -> None: ...
+    def forces(self, value: Float2D) -> None: ...
     @property
     def energy(self) -> float | None:
         """
@@ -232,7 +236,7 @@ class Molecule:
     @energy.setter
     def energy(self, value: float | None) -> None: ...
     @property
-    def charges(self) -> npt.NDArray[np.float64] | None:
+    def charges(self) -> Float1D | None:
         """
         Per-atom partial charges.
 
@@ -244,9 +248,9 @@ class Molecule:
         ...
 
     @charges.setter
-    def charges(self, value: npt.NDArray[np.float64]) -> None: ...
+    def charges(self, value: Float1D) -> None: ...
     @property
-    def velocities(self) -> npt.NDArray[np.float32] | None:
+    def velocities(self) -> Float2D | None:
         """
         Per-atom velocities.
 
@@ -258,9 +262,9 @@ class Molecule:
         ...
 
     @velocities.setter
-    def velocities(self, value: npt.NDArray[np.float32]) -> None: ...
+    def velocities(self, value: Float2D) -> None: ...
     @property
-    def cell(self) -> npt.NDArray[np.float64] | None:
+    def cell(self) -> Float2D | None:
         """
         Unit cell for periodic systems.
 
@@ -272,9 +276,9 @@ class Molecule:
         ...
 
     @cell.setter
-    def cell(self, value: npt.NDArray[np.float64]) -> None: ...
+    def cell(self, value: Float2D) -> None: ...
     @property
-    def stress(self) -> npt.NDArray[np.float64] | None:
+    def stress(self) -> Float2D | None:
         """
         Virial stress tensor.
 
@@ -286,9 +290,9 @@ class Molecule:
         ...
 
     @stress.setter
-    def stress(self, value: npt.NDArray[np.float32] | npt.NDArray[np.float64]) -> None: ...
+    def stress(self, value: Float2D) -> None: ...
     @property
-    def positions(self) -> npt.NDArray[np.float32]:
+    def positions(self) -> Float2D:
         """
         Atomic positions (read-only).
 
@@ -505,15 +509,15 @@ class Database:
         ...
     def add_arrays_batch(
         self,
-        positions: npt.NDArray[np.float32],
+        positions: Float3D,
         atomic_numbers: npt.NDArray[np.uint8],
         *,
-        energy: npt.NDArray[np.float64] | None = ...,
-        forces: npt.NDArray[np.float32] | None = ...,
-        charges: npt.NDArray[np.float64] | None = ...,
-        velocities: npt.NDArray[np.float32] | None = ...,
-        cell: npt.NDArray[np.float64] | None = ...,
-        stress: npt.NDArray[np.float64] | None = ...,
+        energy: Float1D | None = ...,
+        forces: Float3D | None = ...,
+        charges: Float2D | None = ...,
+        velocities: Float3D | None = ...,
+        cell: Float3D | None = ...,
+        stress: Float3D | None = ...,
         pbc: npt.NDArray[np.bool_] | None = ...,
         name: Sequence[str] | None = ...,
         properties: dict[str, Any] | None = ...,

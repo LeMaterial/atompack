@@ -127,8 +127,8 @@ def test_molecule_ml_properties_roundtrip() -> None:
 
     stress32 = np.eye(3, dtype=np.float32) * 5.0
     mol.stress = stress32
-    assert mol.stress.dtype == np.float64
-    np.testing.assert_allclose(mol.stress, stress32.astype(np.float64))
+    assert mol.stress.dtype == np.float32
+    np.testing.assert_allclose(mol.stress, stress32)
 
 
 def test_molecule_ml_property_validation() -> None:
@@ -136,7 +136,7 @@ def test_molecule_ml_property_validation() -> None:
 
     with pytest.raises(ValueError, match=r"Forces must have shape"):
         mol.forces = np.zeros((2, 2), dtype=np.float32)
-    with pytest.raises(ValueError, match=r"Forces length"):
+    with pytest.raises(ValueError, match=r"Forces must have shape"):
         mol.forces = np.zeros((1, 3), dtype=np.float32)
 
     with pytest.raises(ValueError, match=r"Charges length"):
@@ -144,7 +144,7 @@ def test_molecule_ml_property_validation() -> None:
 
     with pytest.raises(ValueError, match=r"Velocities must have shape"):
         mol.velocities = np.zeros((2, 2), dtype=np.float32)
-    with pytest.raises(ValueError, match=r"Velocities length"):
+    with pytest.raises(ValueError, match=r"Velocities must have shape"):
         mol.velocities = np.zeros((1, 3), dtype=np.float32)
 
     with pytest.raises(ValueError, match=r"Cell must have shape"):
@@ -276,13 +276,11 @@ def test_molecule_getitem_validation() -> None:
         _ = mol[1.5]
 
 
-def test_from_arrays_rejects_wrong_dtype_positions() -> None:
-    # positions must be float32; passing float64 should be rejected cleanly,
-    # not silently truncated or panic across the FFI boundary.
-    positions = np.zeros((2, 3), dtype=np.float64)  # wrong dtype
+def test_from_arrays_preserves_float64_positions() -> None:
+    positions = np.zeros((2, 3), dtype=np.float64)
     atomic_numbers = np.array([6, 8], dtype=np.uint8)
-    with pytest.raises((TypeError, ValueError)):
-        atompack.Molecule.from_arrays(positions, atomic_numbers)
+    molecule = atompack.Molecule.from_arrays(positions, atomic_numbers)
+    assert molecule.positions.dtype == np.float64
 
 
 def test_from_arrays_rejects_wrong_dtype_atomic_numbers() -> None:

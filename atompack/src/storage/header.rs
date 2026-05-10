@@ -7,6 +7,8 @@ pub(super) struct Header {
     pub(super) num_molecules: u64,
     pub(super) compression: CompressionType,
     pub(super) record_format: u32,
+    pub(super) schema_offset: u64,
+    pub(super) schema_len: u64,
     pub(super) index_offset: u64,
     pub(super) index_len: u64,
 }
@@ -43,6 +45,11 @@ pub(super) fn encode_header_slot(header: Header) -> [u8; HEADER_SLOT_SIZE] {
     slot[52..56].copy_from_slice(&compression_level.to_le_bytes());
     slot[56..60].copy_from_slice(&header.record_format.to_le_bytes());
 
+    // Keep the legacy v2 header field offsets intact; schema metadata lives in
+    // bytes that were previously unused.
+    slot[60..68].copy_from_slice(&header.schema_offset.to_le_bytes());
+    slot[68..76].copy_from_slice(&header.schema_len.to_le_bytes());
+
     let checksum = adler32(&slot[..HEADER_SLOT_SIZE - 4]);
     slot[HEADER_SLOT_SIZE - 4..HEADER_SLOT_SIZE].copy_from_slice(&checksum.to_le_bytes());
 
@@ -76,6 +83,8 @@ fn decode_header_slot(slot: &[u8; HEADER_SLOT_SIZE], file_size: u64) -> Option<H
     let compression_type = slot[48];
     let compression_level = i32::from_le_bytes(slot[52..56].try_into().ok()?);
     let record_format = u32::from_le_bytes(slot[56..60].try_into().ok()?);
+    let schema_offset = u64::from_le_bytes(slot[60..68].try_into().ok()?);
+    let schema_len = u64::from_le_bytes(slot[68..76].try_into().ok()?);
 
     let compression = match compression_type {
         0 => CompressionType::None,
@@ -86,6 +95,17 @@ fn decode_header_slot(slot: &[u8; HEADER_SLOT_SIZE], file_size: u64) -> Option<H
 
     if data_start < HEADER_REGION_SIZE || data_start > file_size {
         return None;
+    }
+
+    if schema_offset == 0 || schema_len == 0 {
+        if schema_offset != 0 || schema_len != 0 {
+            return None;
+        }
+    } else {
+        let end = schema_offset.checked_add(schema_len)?;
+        if schema_offset < data_start || end > file_size {
+            return None;
+        }
     }
 
     if index_offset == 0 || index_len == 0 {
@@ -113,6 +133,8 @@ fn decode_header_slot(slot: &[u8; HEADER_SLOT_SIZE], file_size: u64) -> Option<H
         num_molecules,
         compression,
         record_format,
+        schema_offset,
+        schema_len,
         index_offset,
         index_len,
     })

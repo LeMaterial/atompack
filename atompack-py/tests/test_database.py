@@ -62,6 +62,48 @@ def test_database_rejects_invalid_compression(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match=r"Invalid compression"):
         atompack.Database(str(tmp_path / "bad.atp"), compression="definitely-not-a-codec")
 
+def test_database_add_arrays_batch_rejects_v2_incompatible_builtin_dtype(tmp_path: Path) -> None:
+    path = tmp_path / "batch_arrays_v2_compat.atp"
+    db = atompack.Database(str(path))
+    db.add_molecule(
+        atompack.Molecule(
+            np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
+            np.array([6], dtype=np.uint8),
+        )
+    )
+    db.flush()
+
+    db = atompack.Database.open(str(path), mmap=False)
+    positions = np.array([[[0.0, 0.0, 0.0]]], dtype=np.float32)
+    atomic_numbers = np.array([[6]], dtype=np.uint8)
+    cell = np.eye(3, dtype=np.float32)[None, ...]
+
+    with pytest.raises(ValueError, match="record format 2 does not support float32 cell"):
+        db.add_arrays_batch(positions, atomic_numbers, cell=cell)
+
+
+def test_database_add_molecules_view_passthrough_preserves_v3_positions_dtype(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "source_v3.atp"
+    target_path = tmp_path / "target_v3.atp"
+
+    positions = np.array([[0.0, 0.0, 0.0], [1.25, 0.0, 0.0]], dtype=np.float64)
+    atomic_numbers = np.array([6, 8], dtype=np.uint8)
+
+    source = atompack.Database(str(source_path))
+    source.add_molecule(atompack.Molecule.from_arrays(positions, atomic_numbers))
+    source.flush()
+
+    source_view_db = atompack.Database.open(str(source_path))
+    target = atompack.Database(str(target_path))
+    target.add_molecules([source_view_db[0]])
+    target.flush()
+
+    roundtrip = atompack.Database.open(str(target_path))[0]
+    np.testing.assert_allclose(roundtrip.positions, positions)
+    assert roundtrip.positions.dtype == np.float64
+
 
 def test_database_roundtrip_from_arrays_with_builtins(tmp_path: Path) -> None:
     path = tmp_path / "from_arrays_builtins.atp"
@@ -246,6 +288,40 @@ def test_database_add_arrays_batch_roundtrip_with_custom_properties(tmp_path: Pa
         np.array([0.3, 0.4], dtype=np.float64),
     )
     assert second.get_property("phase") == "valid"
+
+
+def test_database_add_arrays_batch_promotes_to_float64_geometry_when_needed(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "batch_arrays_float64_geometry.atp"
+    positions = np.array(
+        [
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            [[0.5, 0.1, 0.2], [1.5, 0.1, 0.2]],
+        ],
+        dtype=np.float64,
+    )
+    atomic_numbers = np.array([[6, 8], [1, 8]], dtype=np.uint8)
+    forces = np.array(
+        [
+            [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]],
+            [[0.6, 0.5, 0.4], [0.3, 0.2, 0.1]],
+        ],
+        dtype=np.float64,
+    )
+
+    db = atompack.Database(str(path))
+    db.add_arrays_batch(positions, atomic_numbers, forces=forces)
+    db.flush()
+
+    reopened = atompack.Database.open(str(path), mmap=False)
+    first = reopened[0]
+    flat = reopened.get_molecules_flat([0, 1])
+
+    assert first.positions.dtype == np.float64
+    assert first.forces.dtype == np.float64
+    assert flat["positions"].dtype == np.float64
+    assert flat["forces"].dtype == np.float64
 
 
 @pytest.mark.parametrize("mmap", [False, True])
@@ -577,6 +653,69 @@ def test_get_molecules_flat_empty(tmp_path: Path) -> None:
     assert batch["n_atoms"].shape == (0,)
     assert batch["positions"].shape == (0, 3)
     assert batch["atomic_numbers"].shape == (0,)
+
+
+def test_database_roundtrip_preserves_float64_geometry(tmp_path: Path) -> None:
+    path = tmp_path / "float64_geometry.atp"
+    db = atompack.Database(str(path), overwrite=True)
+
+    positions = np.array([[0.0, 0.1, 0.2], [1.0, 1.1, 1.2]], dtype=np.float64)
+    atomic_numbers = np.array([6, 8], dtype=np.uint8)
+    forces = np.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]], dtype=np.float64)
+    charges = np.array([-0.1, 0.1], dtype=np.float32)
+    cell = np.eye(3, dtype=np.float32)
+    stress = np.eye(3, dtype=np.float64) * 2.0
+
+    mol = atompack.Molecule.from_arrays(
+        positions,
+        atomic_numbers,
+        forces=forces,
+        charges=charges,
+        cell=cell,
+        stress=stress,
+    )
+    db.add_molecule(mol)
+    db.flush()
+
+    reopened = atompack.Database.open(str(path), mmap=False)
+    got = reopened.get_molecule(0)
+    flat = reopened.get_molecules_flat([0])
+
+    assert got.positions.dtype == np.float64
+    assert got.forces.dtype == np.float64
+    assert got.charges.dtype == np.float32
+    assert got.cell.dtype == np.float32
+    assert got.stress.dtype == np.float64
+    assert flat["positions"].dtype == np.float64
+    assert flat["forces"].dtype == np.float64
+    assert flat["charges"].dtype == np.float32
+    assert flat["cell"].dtype == np.float32
+    assert flat["stress"].dtype == np.float64
+
+
+def test_get_molecules_flat_late_optional_builtin_zero_fills(tmp_path: Path) -> None:
+    path = tmp_path / "late_optional_builtin.atp"
+    db = atompack.Database(str(path), overwrite=True)
+
+    positions = np.zeros((2, 3), dtype=np.float64)
+    atomic_numbers = np.array([6, 8], dtype=np.uint8)
+    db.add_molecule(atompack.Molecule.from_arrays(positions, atomic_numbers))
+    db.add_molecule(
+        atompack.Molecule.from_arrays(
+            positions + 1.0,
+            atomic_numbers,
+            forces=np.ones((2, 3), dtype=np.float64),
+        )
+    )
+    db.flush()
+
+    reopened = atompack.Database.open(str(path), mmap=False)
+    batch = reopened.get_molecules_flat([0, 1])
+
+    assert batch["positions"].dtype == np.float64
+    assert batch["forces"].dtype == np.float64
+    np.testing.assert_allclose(batch["forces"][:2], np.zeros((2, 3), dtype=np.float64))
+    np.testing.assert_allclose(batch["forces"][2:], np.ones((2, 3), dtype=np.float64))
 
 
 def test_database_open_mmap_populate(tmp_path: Path) -> None:

@@ -3,7 +3,7 @@
 //!
 //! Run with: cargo run -p atompack --example basic_usage
 
-use atompack::{Atom, AtomDatabase, Molecule, compression::CompressionType};
+use atompack::{Atom, AtomDatabase, FloatScalarData, Molecule, compression::CompressionType};
 
 fn main() -> atompack::Result<()> {
     let db_path = std::env::temp_dir().join(format!("atompack-basic-{}.atp", std::process::id()));
@@ -14,7 +14,7 @@ fn main() -> atompack::Result<()> {
         Atom::new(-0.24, 0.93, 0.0, 1),
     ]);
     water.name = Some("water".to_string());
-    water.energy = Some(-76.4);
+    water.energy = Some(FloatScalarData::F64(-76.4));
 
     let methane = Molecule::from_atoms(vec![
         Atom::new(0.0, 0.0, 0.0, 6),
@@ -33,7 +33,7 @@ fn main() -> atompack::Result<()> {
 
     let roundtrip = db.get_molecule(0)?;
     assert_eq!(roundtrip.name.as_deref(), Some("water"));
-    assert_eq!(roundtrip.energy, Some(-76.4));
+    assert_eq!(roundtrip.energy, Some(FloatScalarData::F64(-76.4)));
     assert_eq!(roundtrip.len(), 3);
 
     println!("wrote {}", db_path.display());
