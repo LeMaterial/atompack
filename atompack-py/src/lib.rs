@@ -125,9 +125,8 @@ pub(crate) use self::py_dtypes::{
     parse_mat3_field, parse_positions_field, parse_property_value, parse_vec3_field,
 };
 pub(crate) use self::soa::{
-    LazySection, SectionRef, SectionSchema, SoaContext, SoaMoleculeView, is_per_atom,
-    parse_mol_fast_soa, read_f64_scalar, read_i64_scalar, section_schema_from_ref,
-    type_tag_elem_bytes, validate_section_payload,
+    LazySection, SectionSchema, SoaContext, SoaMoleculeView, parse_mol_fast_soa, read_f64_scalar,
+    read_i64_scalar, section_schema_from_ref, type_tag_elem_bytes,
 };
 
 mod database;

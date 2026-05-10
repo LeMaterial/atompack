@@ -105,139 +105,200 @@ pub(crate) fn pyarray2_from_cow<'py, T: Element + Clone>(
     }
 }
 
-pub(crate) struct SoaSection<'a> {
+pub(crate) struct SoaTypedPayload<'a> {
+    pub(crate) type_tag: u8,
+    pub(crate) payload: &'a [u8],
+}
+
+pub(crate) struct SoaBuiltinPayloads<'a> {
+    pub(crate) energy: Option<SoaTypedPayload<'a>>,
+    pub(crate) forces: Option<SoaTypedPayload<'a>>,
+    pub(crate) charges: Option<SoaTypedPayload<'a>>,
+    pub(crate) velocities: Option<SoaTypedPayload<'a>>,
+    pub(crate) cell: Option<SoaTypedPayload<'a>>,
+    pub(crate) stress: Option<SoaTypedPayload<'a>>,
+    pub(crate) pbc: Option<[u8; 3]>,
+    pub(crate) name: Option<&'a str>,
+}
+
+pub(crate) struct SoaCustomSection<'a> {
     pub(crate) kind: u8,
     pub(crate) key: &'a str,
     pub(crate) type_tag: u8,
     pub(crate) payload: &'a [u8],
 }
 
-pub(crate) struct SoaRecord<'a> {
-    pub(crate) record_format: u32,
-    pub(crate) positions_type: u8,
-    pub(crate) positions: &'a [u8],
-    pub(crate) atomic_numbers: &'a [u8],
-    pub(crate) sections: &'a [SoaSection<'a>],
-}
-
-fn write_soa_section_raw(buf: &mut Vec<u8>, section: &SoaSection<'_>) -> Result<(), String> {
-    let key_len: u8 = section
-        .key
+fn write_soa_section_raw(
+    buf: &mut Vec<u8>,
+    kind: u8,
+    key: &str,
+    type_tag: u8,
+    payload: &[u8],
+) -> Result<(), String> {
+    let key_len: u8 = key
         .len()
         .try_into()
-        .map_err(|_| format!("Section key '{}' is too long", section.key))?;
-    let payload_len: u32 = section
-        .payload
+        .map_err(|_| format!("Section key '{}' is too long", key))?;
+    let payload_len: u32 = payload
         .len()
         .try_into()
-        .map_err(|_| format!("Section '{}' payload is too large", section.key))?;
-    buf.push(section.kind);
+        .map_err(|_| format!("Section '{}' payload is too large", key))?;
+    buf.push(kind);
     buf.push(key_len);
-    buf.extend_from_slice(section.key.as_bytes());
-    buf.push(section.type_tag);
+    buf.extend_from_slice(key.as_bytes());
+    buf.push(type_tag);
     buf.extend_from_slice(&payload_len.to_le_bytes());
-    buf.extend_from_slice(section.payload);
+    buf.extend_from_slice(payload);
     Ok(())
 }
 
-pub(crate) fn build_soa_record(record: SoaRecord<'_>) -> Result<Vec<u8>, String> {
-    if !matches!(
-        record.record_format,
-        RECORD_FORMAT_SOA_V2 | RECORD_FORMAT_SOA_V3
-    ) {
-        return Err(format!(
-            "Unsupported record format {}",
-            record.record_format
-        ));
-    }
-    let positions_elem_bytes = match record.positions_type {
+pub(crate) fn build_soa_record_unchecked(
+    positions_type: u8,
+    positions: &[u8],
+    atomic_numbers: &[u8],
+    builtins: SoaBuiltinPayloads<'_>,
+    custom_sections: &[SoaCustomSection<'_>],
+) -> Result<Vec<u8>, String> {
+    let positions_elem_bytes = match positions_type {
         TYPE_VEC3_F32 => 12usize,
         TYPE_VEC3_F64 => 24usize,
         other => {
             return Err(format!("Unsupported positions type tag {}", other));
         }
     };
-    if record.record_format == RECORD_FORMAT_SOA_V2 && record.positions_type != TYPE_VEC3_F32 {
-        return Err("record format 2 only supports float32 positions".to_string());
-    }
-    if !record.positions.len().is_multiple_of(positions_elem_bytes) {
+    if !positions.len().is_multiple_of(positions_elem_bytes) {
         return Err(format!(
             "positions payload length ({}) is not a multiple of {}",
-            record.positions.len(),
+            positions.len(),
             positions_elem_bytes
         ));
     }
-    let n_atoms = record.positions.len() / positions_elem_bytes;
-    if record.atomic_numbers.len() != n_atoms {
+    let n_atoms = positions.len() / positions_elem_bytes;
+    if atomic_numbers.len() != n_atoms {
         return Err(format!(
             "Atomic numbers length ({}) doesn't match atom count ({})",
-            record.atomic_numbers.len(),
+            atomic_numbers.len(),
             n_atoms
         ));
     }
 
-    let mut n_sections = 0u16;
     let mut payload_bytes = 0usize;
     let mut section_overhead = 0usize;
-    let mut account_section = |payload_len: usize, key_len: usize| {
-        n_sections += 1;
-        payload_bytes += payload_len;
-        section_overhead += 1 + 1 + key_len + 1 + 4;
+    let mut section_count = 0usize;
+    let mut account_section = |key: &str, payload: &[u8]| {
+        section_count += 1;
+        payload_bytes += payload.len();
+        section_overhead += 1 + 1 + key.len() + 1 + 4;
     };
 
-    for section in record.sections {
-        let parsed = SectionRef {
-            kind: section.kind,
-            key: section.key,
-            type_tag: section.type_tag,
-            payload: section.payload,
-        };
-        let per_atom = is_per_atom(parsed.kind, parsed.key, parsed.type_tag);
-        let elem_bytes = match parsed.type_tag {
-            TYPE_STRING => 0,
-            tag if per_atom => {
-                let elem_bytes = type_tag_elem_bytes(tag);
-                if elem_bytes == 0 {
-                    return Err(format!(
-                        "Unsupported per-atom section type tag {} for key '{}'",
-                        tag, parsed.key
-                    ));
-                }
-                elem_bytes
-            }
-            TYPE_FLOAT | TYPE_INT => 8,
-            TYPE_FLOAT32 => 4,
-            TYPE_BOOL3 => 3,
-            TYPE_MAT3X3_F32 => 36,
-            TYPE_MAT3X3_F64 => 72,
-            _ => parsed.payload.len(),
-        };
-        let slot_bytes = if parsed.type_tag == TYPE_STRING {
-            0
-        } else if per_atom {
-            elem_bytes
-        } else {
-            parsed.payload.len()
-        };
-        validate_section_payload(&parsed, per_atom, elem_bytes, slot_bytes, n_atoms)
-            .map_err(|e| format!("{}", e))?;
-        account_section(parsed.payload.len(), parsed.key.len());
+    if let Some(payload) = builtins.charges.as_ref() {
+        account_section("charges", payload.payload);
+    }
+    if let Some(payload) = builtins.cell.as_ref() {
+        account_section("cell", payload.payload);
+    }
+    if let Some(payload) = builtins.energy.as_ref() {
+        account_section("energy", payload.payload);
+    }
+    if let Some(payload) = builtins.forces.as_ref() {
+        account_section("forces", payload.payload);
+    }
+    if let Some(name) = builtins.name {
+        account_section("name", name.as_bytes());
+    }
+    if let Some(payload) = builtins.pbc.as_ref() {
+        account_section("pbc", payload);
+    }
+    if let Some(payload) = builtins.stress.as_ref() {
+        account_section("stress", payload.payload);
+    }
+    if let Some(payload) = builtins.velocities.as_ref() {
+        account_section("velocities", payload.payload);
+    }
+    for section in custom_sections {
+        account_section(section.key, section.payload);
     }
 
+    let n_sections: u16 = section_count
+        .try_into()
+        .map_err(|_| "Too many SOA sections".to_string())?;
+
     let mut buf = Vec::with_capacity(
-        4 + record.positions.len()
-            + record.atomic_numbers.len()
-            + 2
-            + section_overhead
-            + payload_bytes,
+        4 + positions.len() + atomic_numbers.len() + 2 + section_overhead + payload_bytes,
     );
     buf.extend_from_slice(&(n_atoms as u32).to_le_bytes());
-    buf.extend_from_slice(record.positions);
-    buf.extend_from_slice(record.atomic_numbers);
+    buf.extend_from_slice(positions);
+    buf.extend_from_slice(atomic_numbers);
     buf.extend_from_slice(&n_sections.to_le_bytes());
 
-    for section in record.sections {
-        write_soa_section_raw(&mut buf, section)?;
+    if let Some(payload) = builtins.charges.as_ref() {
+        write_soa_section_raw(
+            &mut buf,
+            KIND_BUILTIN,
+            "charges",
+            payload.type_tag,
+            payload.payload,
+        )?;
+    }
+    if let Some(payload) = builtins.cell.as_ref() {
+        write_soa_section_raw(
+            &mut buf,
+            KIND_BUILTIN,
+            "cell",
+            payload.type_tag,
+            payload.payload,
+        )?;
+    }
+    if let Some(payload) = builtins.energy.as_ref() {
+        write_soa_section_raw(
+            &mut buf,
+            KIND_BUILTIN,
+            "energy",
+            payload.type_tag,
+            payload.payload,
+        )?;
+    }
+    if let Some(payload) = builtins.forces.as_ref() {
+        write_soa_section_raw(
+            &mut buf,
+            KIND_BUILTIN,
+            "forces",
+            payload.type_tag,
+            payload.payload,
+        )?;
+    }
+    if let Some(name) = builtins.name {
+        write_soa_section_raw(&mut buf, KIND_BUILTIN, "name", TYPE_STRING, name.as_bytes())?;
+    }
+    if let Some(payload) = builtins.pbc.as_ref() {
+        write_soa_section_raw(&mut buf, KIND_BUILTIN, "pbc", TYPE_BOOL3, payload)?;
+    }
+    if let Some(payload) = builtins.stress.as_ref() {
+        write_soa_section_raw(
+            &mut buf,
+            KIND_BUILTIN,
+            "stress",
+            payload.type_tag,
+            payload.payload,
+        )?;
+    }
+    if let Some(payload) = builtins.velocities.as_ref() {
+        write_soa_section_raw(
+            &mut buf,
+            KIND_BUILTIN,
+            "velocities",
+            payload.type_tag,
+            payload.payload,
+        )?;
+    }
+    for section in custom_sections {
+        write_soa_section_raw(
+            &mut buf,
+            section.kind,
+            section.key,
+            section.type_tag,
+            section.payload,
+        )?;
     }
 
     Ok(buf)

@@ -59,8 +59,9 @@ enum MoleculeBacking {
 mod helpers;
 
 pub(crate) use self::helpers::{
-    SoaRecord, SoaSection, build_soa_record, cast_or_decode_f32, cast_or_decode_f64,
-    cast_or_decode_i32, cast_or_decode_i64, pyarray1_from_cow, pyarray2_from_cow,
+    SoaBuiltinPayloads, SoaCustomSection, SoaTypedPayload, build_soa_record_unchecked,
+    cast_or_decode_f32, cast_or_decode_f64, cast_or_decode_i32, cast_or_decode_i64,
+    pyarray1_from_cow, pyarray2_from_cow,
 };
 use self::helpers::{into_py_any, property_section_to_pyobject, property_value_to_pyobject};
 
