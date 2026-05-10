@@ -300,7 +300,9 @@ impl PyAtomDatabase {
     /// Get a molecule by index as a lazy view-backed molecule.
     fn get_molecule(&self, py: Python<'_>, index: isize) -> PyResult<PyMolecule> {
         let normalized = self.normalize_index(index)?;
-        Ok(PyMolecule::from_view(self.single_molecule_view(py, normalized)?))
+        Ok(PyMolecule::from_view(
+            self.single_molecule_view(py, normalized)?,
+        ))
     }
 
     /// Get multiple molecules by indices (parallel batch reading)
