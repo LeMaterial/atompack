@@ -1,6 +1,11 @@
-use super::soa::{arr, positions_stride, property_value_type_tag, resolve_positions_type};
+use super::dtypes::{
+    arr, float_array_data_type_tag, float_array_payload_len, float_scalar_data_type_tag,
+    float_scalar_payload_len, mat3_data_type_tag, mat3_payload_len, positions_type_from_molecule,
+    property_value_payload_len, property_value_type_tag,
+    validate_builtin_type_tag_for_record_format, vec3_data_type_tag, vec3_payload_len,
+};
+use super::soa::{SoaLayout, resolve_layout};
 use super::*;
-use crate::atom::{FloatArrayData, FloatScalarData, Mat3Data, Vec3Data};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -18,13 +23,6 @@ pub(super) struct SchemaEntry {
 }
 
 const SCHEMA_BLOB_VERSION: u32 = 1;
-
-pub(super) fn positions_type_from_molecule(molecule: &Molecule) -> u8 {
-    match molecule.positions {
-        Vec3Data::F32(_) => TYPE_VEC3_F32,
-        Vec3Data::F64(_) => TYPE_VEC3_F64,
-    }
-}
 
 pub(super) fn encode_schema_lock(lock: &SchemaLock) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
@@ -199,65 +197,17 @@ fn schema_entry(
     })
 }
 
-fn validate_builtin_type_tag_for_record_format(
-    record_format: u32,
-    key: &str,
-    type_tag: u8,
-) -> Result<()> {
-    match record_format {
-        RECORD_FORMAT_SOA_V3 => Ok(()),
-        RECORD_FORMAT_SOA_V2 => match key {
-            "charges" if type_tag != TYPE_F64_ARRAY => Err(Error::InvalidData(
-                "record format 2 does not support float32 charges".into(),
-            )),
-            "cell" if type_tag != TYPE_MAT3X3_F64 => Err(Error::InvalidData(
-                "record format 2 does not support float32 cell".into(),
-            )),
-            "energy" if type_tag != TYPE_FLOAT => Err(Error::InvalidData(
-                "record format 2 does not support float32 energy".into(),
-            )),
-            "forces" if type_tag != TYPE_VEC3_F32 => Err(Error::InvalidData(
-                "record format 2 does not support float64 forces".into(),
-            )),
-            "stress" if type_tag != TYPE_MAT3X3_F64 => Err(Error::InvalidData(
-                "record format 2 does not support float32 stress".into(),
-            )),
-            "velocities" if type_tag != TYPE_VEC3_F32 => Err(Error::InvalidData(
-                "record format 2 does not support float64 velocities".into(),
-            )),
-            _ => Ok(()),
-        },
-        _ => Err(Error::InvalidData(format!(
-            "Unsupported record format {}",
-            record_format
-        ))),
-    }
-}
-
 pub(super) fn validate_schema_lock_for_record_format(
     record_format: u32,
     schema: &SchemaLock,
 ) -> Result<()> {
-    let _ = resolve_positions_type(record_format, schema.positions_type)?;
+    let _ = resolve_layout(record_format, schema.positions_type)?;
     for ((kind, key), entry) in &schema.sections {
         if *kind == KIND_BUILTIN {
             validate_builtin_type_tag_for_record_format(record_format, key, entry.type_tag)?;
         }
     }
     Ok(())
-}
-
-fn property_value_payload_len(value: &PropertyValue) -> usize {
-    match value {
-        PropertyValue::Float(_) | PropertyValue::Int(_) => 8,
-        PropertyValue::String(value) => value.len(),
-        PropertyValue::FloatArray(values) => values.len() * 8,
-        PropertyValue::Vec3Array(values) => values.len() * 12,
-        PropertyValue::IntArray(values) => values.len() * 8,
-        PropertyValue::Float32Array(values) => values.len() * 4,
-        PropertyValue::Vec3ArrayF64(values) => values.len() * 24,
-        PropertyValue::Int32Array(values) => values.len() * 4,
-    }
 }
 
 pub(super) fn schema_from_molecule(molecule: &Molecule) -> Result<SchemaLock> {
@@ -274,32 +224,36 @@ pub(super) fn schema_from_molecule(molecule: &Molecule) -> Result<SchemaLock> {
     };
 
     if let Some(charges) = &molecule.charges {
-        let (type_tag, payload_len) = match charges {
-            FloatArrayData::F32(values) => (TYPE_F32_ARRAY, values.len() * 4),
-            FloatArrayData::F64(values) => (TYPE_F64_ARRAY, values.len() * 8),
-        };
-        insert(KIND_BUILTIN, "charges", type_tag, payload_len)?;
+        insert(
+            KIND_BUILTIN,
+            "charges",
+            float_array_data_type_tag(charges),
+            float_array_payload_len(charges),
+        )?;
     }
     if let Some(cell) = &molecule.cell {
-        let (type_tag, payload_len) = match cell {
-            Mat3Data::F32(_) => (TYPE_MAT3X3_F32, 36),
-            Mat3Data::F64(_) => (TYPE_MAT3X3_F64, 72),
-        };
-        insert(KIND_BUILTIN, "cell", type_tag, payload_len)?;
+        insert(
+            KIND_BUILTIN,
+            "cell",
+            mat3_data_type_tag(cell),
+            mat3_payload_len(cell),
+        )?;
     }
     if let Some(energy) = &molecule.energy {
-        let (type_tag, payload_len) = match energy {
-            FloatScalarData::F32(_) => (TYPE_FLOAT32, 4),
-            FloatScalarData::F64(_) => (TYPE_FLOAT, 8),
-        };
-        insert(KIND_BUILTIN, "energy", type_tag, payload_len)?;
+        insert(
+            KIND_BUILTIN,
+            "energy",
+            float_scalar_data_type_tag(energy),
+            float_scalar_payload_len(energy),
+        )?;
     }
     if let Some(forces) = &molecule.forces {
-        let (type_tag, payload_len) = match forces {
-            Vec3Data::F32(values) => (TYPE_VEC3_F32, values.len() * 12),
-            Vec3Data::F64(values) => (TYPE_VEC3_F64, values.len() * 24),
-        };
-        insert(KIND_BUILTIN, "forces", type_tag, payload_len)?;
+        insert(
+            KIND_BUILTIN,
+            "forces",
+            vec3_data_type_tag(forces),
+            vec3_payload_len(forces),
+        )?;
     }
     if let Some(name) = &molecule.name {
         insert(KIND_BUILTIN, "name", TYPE_STRING, name.len())?;
@@ -308,18 +262,20 @@ pub(super) fn schema_from_molecule(molecule: &Molecule) -> Result<SchemaLock> {
         insert(KIND_BUILTIN, "pbc", TYPE_BOOL3, 3)?;
     }
     if let Some(stress) = &molecule.stress {
-        let (type_tag, payload_len) = match stress {
-            Mat3Data::F32(_) => (TYPE_MAT3X3_F32, 36),
-            Mat3Data::F64(_) => (TYPE_MAT3X3_F64, 72),
-        };
-        insert(KIND_BUILTIN, "stress", type_tag, payload_len)?;
+        insert(
+            KIND_BUILTIN,
+            "stress",
+            mat3_data_type_tag(stress),
+            mat3_payload_len(stress),
+        )?;
     }
     if let Some(velocities) = &molecule.velocities {
-        let (type_tag, payload_len) = match velocities {
-            Vec3Data::F32(values) => (TYPE_VEC3_F32, values.len() * 12),
-            Vec3Data::F64(values) => (TYPE_VEC3_F64, values.len() * 24),
-        };
-        insert(KIND_BUILTIN, "velocities", type_tag, payload_len)?;
+        insert(
+            KIND_BUILTIN,
+            "velocities",
+            vec3_data_type_tag(velocities),
+            vec3_payload_len(velocities),
+        )?;
     }
 
     for (key, value) in &molecule.atom_properties {
@@ -342,10 +298,10 @@ pub(super) fn schema_from_molecule(molecule: &Molecule) -> Result<SchemaLock> {
     Ok(schema)
 }
 
-fn parse_record_schema_with_positions(
+fn parse_record_schema_with_layout(
     bytes: &[u8],
     record_format: u32,
-    positions_type: u8,
+    layout: SoaLayout,
 ) -> Result<SchemaLock> {
     if bytes.len() < 6 {
         return Err(Error::InvalidData("SOA record too small".into()));
@@ -358,7 +314,7 @@ fn parse_record_schema_with_positions(
     let positions_end = pos
         .checked_add(
             n_atoms
-                .checked_mul(positions_stride(positions_type)?)
+                .checked_mul(layout.positions_stride)
                 .ok_or_else(|| Error::InvalidData("SOA positions overflow".into()))?,
         )
         .ok_or_else(|| Error::InvalidData("SOA positions overflow".into()))?;
@@ -388,7 +344,7 @@ fn parse_record_schema_with_positions(
     pos += 2;
 
     let mut schema = SchemaLock {
-        positions_type: Some(positions_type),
+        positions_type: Some(layout.positions_type),
         sections: BTreeMap::new(),
     };
 
@@ -433,8 +389,11 @@ pub(super) fn record_schema(
     record_format: u32,
     positions_type_hint: Option<u8>,
 ) -> Result<SchemaLock> {
-    let positions_type = resolve_positions_type(record_format, positions_type_hint)?;
-    parse_record_schema_with_positions(bytes, record_format, positions_type)
+    parse_record_schema_with_layout(
+        bytes,
+        record_format,
+        resolve_layout(record_format, positions_type_hint)?,
+    )
 }
 
 pub(super) fn merge_schema_lock(lock: &mut SchemaLock, record: &SchemaLock) -> Result<()> {

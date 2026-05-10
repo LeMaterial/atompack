@@ -253,153 +253,6 @@ fn molecule_from_positions(
     }
 }
 
-pub(crate) fn parse_vec3_field(
-    value: &Bound<'_, PyAny>,
-    label: &str,
-    expected_rows: usize,
-) -> PyResult<Vec3Data> {
-    if let Ok(arr) = value.cast::<PyArray2<f32>>() {
-        let readonly = arr.readonly();
-        let view = readonly.as_array();
-        if view.shape() != [expected_rows, 3] {
-            return Err(PyValueError::new_err(format!(
-                "{} must have shape ({}, 3)",
-                label, expected_rows
-            )));
-        }
-        return Ok(Vec3Data::F32(
-            view.outer_iter()
-                .map(|row| [row[0], row[1], row[2]])
-                .collect(),
-        ));
-    }
-    if let Ok(arr) = value.cast::<PyArray2<f64>>() {
-        let readonly = arr.readonly();
-        let view = readonly.as_array();
-        if view.shape() != [expected_rows, 3] {
-            return Err(PyValueError::new_err(format!(
-                "{} must have shape ({}, 3)",
-                label, expected_rows
-            )));
-        }
-        return Ok(Vec3Data::F64(
-            view.outer_iter()
-                .map(|row| [row[0], row[1], row[2]])
-                .collect(),
-        ));
-    }
-    Err(PyValueError::new_err(format!(
-        "{} must be a float32 or float64 ndarray with shape ({}, 3)",
-        label, expected_rows
-    )))
-}
-
-fn parse_positions_field(value: &Bound<'_, PyAny>) -> PyResult<Vec3Data> {
-    if let Ok(arr) = value.cast::<PyArray2<f32>>() {
-        let readonly = arr.readonly();
-        let view = readonly.as_array();
-        if view.shape().len() != 2 || view.shape()[1] != 3 {
-            return Err(PyValueError::new_err(
-                "positions must have shape (n_atoms, 3)",
-            ));
-        }
-        return Ok(Vec3Data::F32(
-            view.outer_iter()
-                .map(|row| [row[0], row[1], row[2]])
-                .collect(),
-        ));
-    }
-    if let Ok(arr) = value.cast::<PyArray2<f64>>() {
-        let readonly = arr.readonly();
-        let view = readonly.as_array();
-        if view.shape().len() != 2 || view.shape()[1] != 3 {
-            return Err(PyValueError::new_err(
-                "positions must have shape (n_atoms, 3)",
-            ));
-        }
-        return Ok(Vec3Data::F64(
-            view.outer_iter()
-                .map(|row| [row[0], row[1], row[2]])
-                .collect(),
-        ));
-    }
-    Err(PyValueError::new_err(
-        "positions must be a float32 or float64 ndarray with shape (n_atoms, 3)",
-    ))
-}
-
-pub(crate) fn parse_float_array_field(
-    value: &Bound<'_, PyAny>,
-    label: &str,
-    expected_len: usize,
-) -> PyResult<FloatArrayData> {
-    if let Ok(arr) = value.cast::<PyArray1<f32>>() {
-        let values = arr.readonly().as_array().to_vec();
-        if values.len() != expected_len {
-            return Err(PyValueError::new_err(format!(
-                "{} length ({}) doesn't match atom count ({})",
-                label,
-                values.len(),
-                expected_len
-            )));
-        }
-        return Ok(FloatArrayData::F32(values));
-    }
-    if let Ok(arr) = value.cast::<PyArray1<f64>>() {
-        let values = arr.readonly().as_array().to_vec();
-        if values.len() != expected_len {
-            return Err(PyValueError::new_err(format!(
-                "{} length ({}) doesn't match atom count ({})",
-                label,
-                values.len(),
-                expected_len
-            )));
-        }
-        return Ok(FloatArrayData::F64(values));
-    }
-    Err(PyValueError::new_err(format!(
-        "{} must be a float32 or float64 ndarray with shape ({},)",
-        label, expected_len
-    )))
-}
-
-pub(crate) fn parse_mat3_field(value: &Bound<'_, PyAny>, label: &str) -> PyResult<Mat3Data> {
-    if let Ok(arr) = value.cast::<PyArray2<f32>>() {
-        let readonly = arr.readonly();
-        let view = readonly.as_array();
-        if view.shape() != [3, 3] {
-            return Err(PyValueError::new_err(format!(
-                "{} must have shape (3, 3)",
-                label
-            )));
-        }
-        return Ok(Mat3Data::F32([
-            [view[[0, 0]], view[[0, 1]], view[[0, 2]]],
-            [view[[1, 0]], view[[1, 1]], view[[1, 2]]],
-            [view[[2, 0]], view[[2, 1]], view[[2, 2]]],
-        ]));
-    }
-    if let Ok(arr) = value.cast::<PyArray2<f64>>() {
-        let readonly = arr.readonly();
-        let view = readonly.as_array();
-        if view.shape() != [3, 3] {
-            return Err(PyValueError::new_err(format!(
-                "{} must have shape (3, 3)",
-                label
-            )));
-        }
-        return Ok(Mat3Data::F64([
-            [view[[0, 0]], view[[0, 1]], view[[0, 2]]],
-            [view[[1, 0]], view[[1, 1]], view[[1, 2]]],
-            [view[[2, 0]], view[[2, 1]], view[[2, 2]]],
-        ]));
-    }
-    Err(PyValueError::new_err(format!(
-        "{} must be a float32 or float64 ndarray with shape (3, 3)",
-        label
-    )))
-}
-
 pub(crate) fn molecule_from_numpy_arrays(
     positions: &Bound<'_, PyAny>,
     atomic_numbers: &Bound<'_, PyArray1<u8>>,
@@ -574,6 +427,116 @@ fn owned_mat3x3_array<'py>(py: Python<'py>, values: &Mat3Data) -> PyResult<Py<Py
     })
 }
 
+fn missing_molecule_state() -> PyErr {
+    PyValueError::new_err("Molecule is missing both owned and view state")
+}
+
+fn view_vec3_payload_py<'py>(
+    py: Python<'py>,
+    payload: &[u8],
+    type_tag: u8,
+    rows: usize,
+    label: &str,
+) -> PyResult<Py<PyAny>> {
+    match type_tag {
+        TYPE_VEC3_F32 => Ok(
+            pyarray2_from_cow(py, cast_or_decode_f32(payload)?, rows, 3)?
+                .into_any()
+                .unbind(),
+        ),
+        TYPE_VEC3_F64 => Ok(
+            pyarray2_from_cow(py, cast_or_decode_f64(payload)?, rows, 3)?
+                .into_any()
+                .unbind(),
+        ),
+        _ => Err(PyValueError::new_err(format!("Invalid {label} section"))),
+    }
+}
+
+fn view_builtin_vec3_slot_py<'py>(
+    py: Python<'py>,
+    view: &SoaMoleculeView,
+    slot: (usize, usize, u8),
+    label: &str,
+) -> PyResult<Py<PyAny>> {
+    match slot.2 {
+        TYPE_VEC3_F32 => {
+            if slot.1 != view.n_atoms * 12 {
+                return Err(PyValueError::new_err(format!("Invalid {label} section")));
+            }
+        }
+        TYPE_VEC3_F64 => {
+            if slot.1 != view.n_atoms * 24 {
+                return Err(PyValueError::new_err(format!("Invalid {label} section")));
+            }
+        }
+        _ => return Err(PyValueError::new_err(format!("Invalid {label} section"))),
+    }
+    view_vec3_payload_py(py, view.builtin_payload(slot), slot.2, view.n_atoms, label)
+}
+
+fn view_builtin_float_array_slot_py<'py>(
+    py: Python<'py>,
+    view: &SoaMoleculeView,
+    slot: (usize, usize, u8),
+    label: &str,
+) -> PyResult<Py<PyAny>> {
+    match slot.2 {
+        TYPE_F32_ARRAY => {
+            if slot.1 != view.n_atoms * 4 {
+                return Err(PyValueError::new_err(format!("Invalid {label} section")));
+            }
+            Ok(
+                pyarray1_from_cow(py, cast_or_decode_f32(view.builtin_payload(slot))?)
+                    .into_any()
+                    .unbind(),
+            )
+        }
+        TYPE_F64_ARRAY => {
+            if slot.1 != view.n_atoms * 8 {
+                return Err(PyValueError::new_err(format!("Invalid {label} section")));
+            }
+            Ok(
+                pyarray1_from_cow(py, cast_or_decode_f64(view.builtin_payload(slot))?)
+                    .into_any()
+                    .unbind(),
+            )
+        }
+        _ => Err(PyValueError::new_err(format!("Invalid {label} section"))),
+    }
+}
+
+fn view_builtin_mat3_slot_py<'py>(
+    py: Python<'py>,
+    view: &SoaMoleculeView,
+    slot: (usize, usize, u8),
+    label: &str,
+) -> PyResult<Py<PyAny>> {
+    match slot.2 {
+        TYPE_MAT3X3_F32 => {
+            if slot.1 != 36 {
+                return Err(PyValueError::new_err(format!("Invalid {label} section")));
+            }
+            Ok(
+                pyarray2_from_cow(py, cast_or_decode_f32(view.builtin_payload(slot))?, 3, 3)?
+                    .into_any()
+                    .unbind(),
+            )
+        }
+        TYPE_MAT3X3_F64 => {
+            if slot.1 != 72 {
+                return Err(PyValueError::new_err(format!("Invalid {label} section")));
+            }
+            Ok(
+                pyarray2_from_cow(py, cast_or_decode_f64(view.builtin_payload(slot))?, 3, 3)?
+                    .into_any()
+                    .unbind(),
+            )
+        }
+        _ => Err(PyValueError::new_err(format!("Invalid {label} section"))),
+    }
+}
+
 impl PyMolecule {
     pub(crate) fn from_owned(inner: Molecule) -> Self {
         Self {
@@ -631,27 +594,14 @@ impl PyMolecule {
         if let Some(inner) = self.as_owned() {
             return owned_vec3_array(py, &inner.positions);
         }
-        let view = self.as_view().ok_or_else(|| {
-            PyValueError::new_err("Molecule is missing both owned and view state")
-        })?;
-        match view.positions_type {
-            TYPE_VEC3_F32 => {
-                let positions = cast_or_decode_f32(view.positions_bytes())?;
-                Ok(pyarray2_from_cow(py, positions, view.n_atoms, 3)?
-                    .into_any()
-                    .unbind())
-            }
-            TYPE_VEC3_F64 => {
-                let positions = cast_or_decode_f64(view.positions_bytes())?;
-                Ok(pyarray2_from_cow(py, positions, view.n_atoms, 3)?
-                    .into_any()
-                    .unbind())
-            }
-            other => Err(PyValueError::new_err(format!(
-                "Unsupported positions type tag {}",
-                other
-            ))),
-        }
+        let view = self.as_view().ok_or_else(missing_molecule_state)?;
+        view_vec3_payload_py(
+            py,
+            view.positions_bytes(),
+            view.positions_type,
+            view.n_atoms,
+            "positions",
+        )
     }
 
     pub(super) fn atomic_numbers_py<'py>(
@@ -661,9 +611,7 @@ impl PyMolecule {
         if let Some(inner) = self.as_owned() {
             return Ok(PyArray1::from_slice(py, &inner.atomic_numbers));
         }
-        let view = self.as_view().ok_or_else(|| {
-            PyValueError::new_err("Molecule is missing both owned and view state")
-        })?;
+        let view = self.as_view().ok_or_else(missing_molecule_state)?;
         Ok(PyArray1::from_slice(py, view.atomic_numbers_bytes()))
     }
 
@@ -675,37 +623,11 @@ impl PyMolecule {
                 .map(|forces| owned_vec3_array(py, forces))
                 .transpose();
         }
-        let view = self.as_view().ok_or_else(|| {
-            PyValueError::new_err("Molecule is missing both owned and view state")
-        })?;
+        let view = self.as_view().ok_or_else(missing_molecule_state)?;
         let Some(slot) = view.forces else {
             return Ok(None);
         };
-        match slot.2 {
-            TYPE_VEC3_F32 => {
-                if slot.1 != view.n_atoms * 12 {
-                    return Err(PyValueError::new_err("Invalid forces section"));
-                }
-                let data = cast_or_decode_f32(view.builtin_payload(slot))?;
-                Ok(Some(
-                    pyarray2_from_cow(py, data, view.n_atoms, 3)?
-                        .into_any()
-                        .unbind(),
-                ))
-            }
-            TYPE_VEC3_F64 => {
-                if slot.1 != view.n_atoms * 24 {
-                    return Err(PyValueError::new_err("Invalid forces section"));
-                }
-                let data = cast_or_decode_f64(view.builtin_payload(slot))?;
-                Ok(Some(
-                    pyarray2_from_cow(py, data, view.n_atoms, 3)?
-                        .into_any()
-                        .unbind(),
-                ))
-            }
-            _ => Err(PyValueError::new_err("Invalid forces section")),
-        }
+        Ok(Some(view_builtin_vec3_slot_py(py, view, slot, "forces")?))
     }
 
     pub(super) fn charges_py<'py>(&self, py: Python<'py>) -> PyResult<Option<Py<PyAny>>> {
@@ -715,29 +637,13 @@ impl PyMolecule {
                 .as_ref()
                 .map(|charges| owned_float_array(py, charges)));
         }
-        let view = self.as_view().ok_or_else(|| {
-            PyValueError::new_err("Molecule is missing both owned and view state")
-        })?;
+        let view = self.as_view().ok_or_else(missing_molecule_state)?;
         let Some(slot) = view.charges else {
             return Ok(None);
         };
-        match slot.2 {
-            TYPE_F32_ARRAY => {
-                if slot.1 != view.n_atoms * 4 {
-                    return Err(PyValueError::new_err("Invalid charges section"));
-                }
-                let data = cast_or_decode_f32(view.builtin_payload(slot))?;
-                Ok(Some(pyarray1_from_cow(py, data).into_any().unbind()))
-            }
-            TYPE_F64_ARRAY => {
-                if slot.1 != view.n_atoms * 8 {
-                    return Err(PyValueError::new_err("Invalid charges section"));
-                }
-                let data = cast_or_decode_f64(view.builtin_payload(slot))?;
-                Ok(Some(pyarray1_from_cow(py, data).into_any().unbind()))
-            }
-            _ => Err(PyValueError::new_err("Invalid charges section")),
-        }
+        Ok(Some(view_builtin_float_array_slot_py(
+            py, view, slot, "charges",
+        )?))
     }
 
     pub(super) fn velocities_py<'py>(&self, py: Python<'py>) -> PyResult<Option<Py<PyAny>>> {
@@ -748,37 +654,16 @@ impl PyMolecule {
                 .map(|velocities| owned_vec3_array(py, velocities))
                 .transpose();
         }
-        let view = self.as_view().ok_or_else(|| {
-            PyValueError::new_err("Molecule is missing both owned and view state")
-        })?;
+        let view = self.as_view().ok_or_else(missing_molecule_state)?;
         let Some(slot) = view.velocities else {
             return Ok(None);
         };
-        match slot.2 {
-            TYPE_VEC3_F32 => {
-                if slot.1 != view.n_atoms * 12 {
-                    return Err(PyValueError::new_err("Invalid velocities section"));
-                }
-                let data = cast_or_decode_f32(view.builtin_payload(slot))?;
-                Ok(Some(
-                    pyarray2_from_cow(py, data, view.n_atoms, 3)?
-                        .into_any()
-                        .unbind(),
-                ))
-            }
-            TYPE_VEC3_F64 => {
-                if slot.1 != view.n_atoms * 24 {
-                    return Err(PyValueError::new_err("Invalid velocities section"));
-                }
-                let data = cast_or_decode_f64(view.builtin_payload(slot))?;
-                Ok(Some(
-                    pyarray2_from_cow(py, data, view.n_atoms, 3)?
-                        .into_any()
-                        .unbind(),
-                ))
-            }
-            _ => Err(PyValueError::new_err("Invalid velocities section")),
-        }
+        Ok(Some(view_builtin_vec3_slot_py(
+            py,
+            view,
+            slot,
+            "velocities",
+        )?))
     }
 
     pub(super) fn cell_py<'py>(&self, py: Python<'py>) -> PyResult<Option<Py<PyAny>>> {
@@ -789,29 +674,11 @@ impl PyMolecule {
                 .map(|cell| owned_mat3x3_array(py, cell))
                 .transpose();
         }
-        let view = self.as_view().ok_or_else(|| {
-            PyValueError::new_err("Molecule is missing both owned and view state")
-        })?;
+        let view = self.as_view().ok_or_else(missing_molecule_state)?;
         let Some(slot) = view.cell else {
             return Ok(None);
         };
-        match slot.2 {
-            TYPE_MAT3X3_F32 => {
-                if slot.1 != 36 {
-                    return Err(PyValueError::new_err("Invalid cell section"));
-                }
-                let data = cast_or_decode_f32(view.builtin_payload(slot))?;
-                Ok(Some(pyarray2_from_cow(py, data, 3, 3)?.into_any().unbind()))
-            }
-            TYPE_MAT3X3_F64 => {
-                if slot.1 != 72 {
-                    return Err(PyValueError::new_err("Invalid cell section"));
-                }
-                let data = cast_or_decode_f64(view.builtin_payload(slot))?;
-                Ok(Some(pyarray2_from_cow(py, data, 3, 3)?.into_any().unbind()))
-            }
-            _ => Err(PyValueError::new_err("Invalid cell section")),
-        }
+        Ok(Some(view_builtin_mat3_slot_py(py, view, slot, "cell")?))
     }
 
     pub(super) fn stress_py<'py>(&self, py: Python<'py>) -> PyResult<Option<Py<PyAny>>> {
@@ -822,29 +689,11 @@ impl PyMolecule {
                 .map(|stress| owned_mat3x3_array(py, stress))
                 .transpose();
         }
-        let view = self.as_view().ok_or_else(|| {
-            PyValueError::new_err("Molecule is missing both owned and view state")
-        })?;
+        let view = self.as_view().ok_or_else(missing_molecule_state)?;
         let Some(slot) = view.stress else {
             return Ok(None);
         };
-        match slot.2 {
-            TYPE_MAT3X3_F32 => {
-                if slot.1 != 36 {
-                    return Err(PyValueError::new_err("Invalid stress section"));
-                }
-                let data = cast_or_decode_f32(view.builtin_payload(slot))?;
-                Ok(Some(pyarray2_from_cow(py, data, 3, 3)?.into_any().unbind()))
-            }
-            TYPE_MAT3X3_F64 => {
-                if slot.1 != 72 {
-                    return Err(PyValueError::new_err("Invalid stress section"));
-                }
-                let data = cast_or_decode_f64(view.builtin_payload(slot))?;
-                Ok(Some(pyarray2_from_cow(py, data, 3, 3)?.into_any().unbind()))
-            }
-            _ => Err(PyValueError::new_err("Invalid stress section")),
-        }
+        Ok(Some(view_builtin_mat3_slot_py(py, view, slot, "stress")?))
     }
 
     pub(super) fn append_owned_ase_properties<'py>(

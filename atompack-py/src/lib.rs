@@ -117,12 +117,17 @@ const TYPE_MAT3X3_F32: u8 = 12;
 const RECORD_FORMAT_SOA_V2: u32 = 2;
 const RECORD_FORMAT_SOA_V3: u32 = 3;
 
+mod py_dtypes;
 mod soa;
 
+pub(crate) use self::py_dtypes::{
+    PyFloatArray1, PyFloatArray2, PyFloatArray3, PyIntArray1, parse_float_array_field,
+    parse_mat3_field, parse_positions_field, parse_property_value, parse_vec3_field,
+};
 pub(crate) use self::soa::{
-    LazySection, SectionRef, SectionSchema, SoaMoleculeView, is_per_atom, parse_mol_fast_soa,
-    read_f64_scalar, read_i64_scalar, section_schema_from_ref, type_tag_elem_bytes,
-    validate_section_payload,
+    LazySection, SectionRef, SectionSchema, SoaContext, SoaMoleculeView, is_per_atom,
+    parse_mol_fast_soa, read_f64_scalar, read_i64_scalar, section_schema_from_ref,
+    type_tag_elem_bytes, validate_section_payload,
 };
 
 mod database;

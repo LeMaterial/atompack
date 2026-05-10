@@ -282,35 +282,27 @@ fn extract_property_column(
     if let Some(column) = extract_string_column(value, batch, key, kind)? {
         return Ok(Some(column));
     }
-    if let Ok(arr) = value.cast::<PyArray1<f64>>() {
-        return Ok(Some(extract_scalar_column_f64(arr, batch, key, kind)?));
+    if let Some(arr) = PyFloatArray1::from_any(value) {
+        return Ok(Some(match arr {
+            PyFloatArray1::F32(arr) => extract_scalar_column_f64(&arr, batch, key, kind)?,
+            PyFloatArray1::F64(arr) => extract_scalar_column_f64(&arr, batch, key, kind)?,
+        }));
     }
-    if let Ok(arr) = value.cast::<PyArray1<f32>>() {
-        return Ok(Some(extract_scalar_column_f64(arr, batch, key, kind)?));
+    if let Some(arr) = PyIntArray1::from_any(value) {
+        return Ok(Some(match arr {
+            PyIntArray1::I32(arr) => extract_scalar_column_i64(&arr, batch, key, kind)?,
+            PyIntArray1::I64(arr) => extract_scalar_column_i64(&arr, batch, key, kind)?,
+        }));
     }
-    if let Ok(arr) = value.cast::<PyArray1<i64>>() {
-        return Ok(Some(extract_scalar_column_i64(arr, batch, key, kind)?));
-    }
-    if let Ok(arr) = value.cast::<PyArray1<i32>>() {
-        return Ok(Some(extract_scalar_column_i64(arr, batch, key, kind)?));
-    }
-    if let Ok(arr) = value.cast::<PyArray2<f64>>() {
-        return Ok(Some(extract_matrix_column(
-            arr,
-            batch,
-            key,
-            kind,
-            TYPE_F64_ARRAY,
-        )?));
-    }
-    if let Ok(arr) = value.cast::<PyArray2<f32>>() {
-        return Ok(Some(extract_matrix_column(
-            arr,
-            batch,
-            key,
-            kind,
-            TYPE_F32_ARRAY,
-        )?));
+    if let Some(arr) = PyFloatArray2::from_any(value) {
+        return Ok(Some(match arr {
+            PyFloatArray2::F32(arr) => {
+                extract_matrix_column(&arr, batch, key, kind, TYPE_F32_ARRAY)?
+            }
+            PyFloatArray2::F64(arr) => {
+                extract_matrix_column(&arr, batch, key, kind, TYPE_F64_ARRAY)?
+            }
+        }));
     }
     if let Ok(arr) = value.cast::<PyArray2<i64>>() {
         return Ok(Some(extract_matrix_column(
@@ -330,36 +322,40 @@ fn extract_property_column(
             TYPE_I32_ARRAY,
         )?));
     }
-    if let Ok(arr) = value.cast::<PyArray3<f64>>() {
-        let readonly = arr.readonly();
-        let view = readonly.as_array();
-        let shape = view.shape();
-        if shape.len() == 3 && shape[0] == batch && shape[2] == 3 {
-            return Ok(Some(extract_vec3_column(
-                arr,
-                batch,
-                shape[1],
-                key,
-                kind,
-                TYPE_VEC3_F64,
-                "molecule properties",
-            )?));
-        }
-    }
-    if let Ok(arr) = value.cast::<PyArray3<f32>>() {
-        let readonly = arr.readonly();
-        let view = readonly.as_array();
-        let shape = view.shape();
-        if shape.len() == 3 && shape[0] == batch && shape[2] == 3 {
-            return Ok(Some(extract_vec3_column(
-                arr,
-                batch,
-                shape[1],
-                key,
-                kind,
-                TYPE_VEC3_F32,
-                "molecule properties",
-            )?));
+    if let Some(arr) = PyFloatArray3::from_any(value) {
+        match arr {
+            PyFloatArray3::F32(arr) => {
+                let readonly = arr.readonly();
+                let view = readonly.as_array();
+                let shape = view.shape();
+                if shape.len() == 3 && shape[0] == batch && shape[2] == 3 {
+                    return Ok(Some(extract_vec3_column(
+                        &arr,
+                        batch,
+                        shape[1],
+                        key,
+                        kind,
+                        TYPE_VEC3_F32,
+                        "molecule properties",
+                    )?));
+                }
+            }
+            PyFloatArray3::F64(arr) => {
+                let readonly = arr.readonly();
+                let view = readonly.as_array();
+                let shape = view.shape();
+                if shape.len() == 3 && shape[0] == batch && shape[2] == 3 {
+                    return Ok(Some(extract_vec3_column(
+                        &arr,
+                        batch,
+                        shape[1],
+                        key,
+                        kind,
+                        TYPE_VEC3_F64,
+                        "molecule properties",
+                    )?));
+                }
+            }
         }
     }
     Ok(None)
@@ -371,19 +367,18 @@ fn extract_atom_property_column(
     n_atoms: usize,
     key: &str,
 ) -> PyResult<Option<BatchSectionColumn>> {
-    if let Ok(arr) = value.cast::<PyArray2<f64>>() {
-        let column = extract_matrix_column(arr, batch, key, KIND_ATOM_PROP, TYPE_F64_ARRAY)?;
-        if column.slot_bytes != n_atoms * std::mem::size_of::<f64>() {
-            return Err(PyValueError::new_err(format!(
-                "atom property '{}' must have shape ({}, {})",
-                key, batch, n_atoms
-            )));
-        }
-        return Ok(Some(column));
-    }
-    if let Ok(arr) = value.cast::<PyArray2<f32>>() {
-        let column = extract_matrix_column(arr, batch, key, KIND_ATOM_PROP, TYPE_F32_ARRAY)?;
-        if column.slot_bytes != n_atoms * std::mem::size_of::<f32>() {
+    if let Some(arr) = PyFloatArray2::from_any(value) {
+        let (column, expected) = match arr {
+            PyFloatArray2::F32(arr) => (
+                extract_matrix_column(&arr, batch, key, KIND_ATOM_PROP, TYPE_F32_ARRAY)?,
+                n_atoms * std::mem::size_of::<f32>(),
+            ),
+            PyFloatArray2::F64(arr) => (
+                extract_matrix_column(&arr, batch, key, KIND_ATOM_PROP, TYPE_F64_ARRAY)?,
+                n_atoms * std::mem::size_of::<f64>(),
+            ),
+        };
+        if column.slot_bytes != expected {
             return Err(PyValueError::new_err(format!(
                 "atom property '{}' must have shape ({}, {})",
                 key, batch, n_atoms
@@ -411,27 +406,27 @@ fn extract_atom_property_column(
         }
         return Ok(Some(column));
     }
-    if let Ok(arr) = value.cast::<PyArray3<f64>>() {
-        return Ok(Some(extract_vec3_column(
-            arr,
-            batch,
-            n_atoms,
-            key,
-            KIND_ATOM_PROP,
-            TYPE_VEC3_F64,
-            "atom properties",
-        )?));
-    }
-    if let Ok(arr) = value.cast::<PyArray3<f32>>() {
-        return Ok(Some(extract_vec3_column(
-            arr,
-            batch,
-            n_atoms,
-            key,
-            KIND_ATOM_PROP,
-            TYPE_VEC3_F32,
-            "atom properties",
-        )?));
+    if let Some(arr) = PyFloatArray3::from_any(value) {
+        return Ok(Some(match arr {
+            PyFloatArray3::F32(arr) => extract_vec3_column(
+                &arr,
+                batch,
+                n_atoms,
+                key,
+                KIND_ATOM_PROP,
+                TYPE_VEC3_F32,
+                "atom properties",
+            )?,
+            PyFloatArray3::F64(arr) => extract_vec3_column(
+                &arr,
+                batch,
+                n_atoms,
+                key,
+                KIND_ATOM_PROP,
+                TYPE_VEC3_F64,
+                "atom properties",
+            )?,
+        }));
     }
     Ok(None)
 }
@@ -493,39 +488,43 @@ impl FastMat3Column {
         let Some(value) = value else {
             return Ok(None);
         };
-        if let Ok(arr) = value.cast::<PyArray3<f32>>() {
-            let ro = arr.readonly();
-            if ro.as_array().shape() != [batch, 3, 3] {
-                return Err(PyValueError::new_err(format!(
-                    "{label} must have shape ({}, 3, 3)",
-                    batch
-                )));
+        if let Some(arr) = PyFloatArray3::from_any(value) {
+            match arr {
+                PyFloatArray3::F32(arr) => {
+                    let ro = arr.readonly();
+                    if ro.as_array().shape() != [batch, 3, 3] {
+                        return Err(PyValueError::new_err(format!(
+                            "{label} must have shape ({}, 3, 3)",
+                            batch
+                        )));
+                    }
+                    let slice = ro.as_slice().map_err(|_| {
+                        PyValueError::new_err(format!("{label} must be C-contiguous"))
+                    })?;
+                    return Ok(Some(Self {
+                        type_tag: TYPE_MAT3X3_F32,
+                        slot_bytes: 36,
+                        payload: bytemuck::cast_slice::<f32, u8>(slice).to_vec(),
+                    }));
+                }
+                PyFloatArray3::F64(arr) => {
+                    let ro = arr.readonly();
+                    if ro.as_array().shape() != [batch, 3, 3] {
+                        return Err(PyValueError::new_err(format!(
+                            "{label} must have shape ({}, 3, 3)",
+                            batch
+                        )));
+                    }
+                    let slice = ro.as_slice().map_err(|_| {
+                        PyValueError::new_err(format!("{label} must be C-contiguous"))
+                    })?;
+                    return Ok(Some(Self {
+                        type_tag: TYPE_MAT3X3_F64,
+                        slot_bytes: 72,
+                        payload: bytemuck::cast_slice::<f64, u8>(slice).to_vec(),
+                    }));
+                }
             }
-            let slice = ro
-                .as_slice()
-                .map_err(|_| PyValueError::new_err(format!("{label} must be C-contiguous")))?;
-            return Ok(Some(Self {
-                type_tag: TYPE_MAT3X3_F32,
-                slot_bytes: 36,
-                payload: bytemuck::cast_slice::<f32, u8>(slice).to_vec(),
-            }));
-        }
-        if let Ok(arr) = value.cast::<PyArray3<f64>>() {
-            let ro = arr.readonly();
-            if ro.as_array().shape() != [batch, 3, 3] {
-                return Err(PyValueError::new_err(format!(
-                    "{label} must have shape ({}, 3, 3)",
-                    batch
-                )));
-            }
-            let slice = ro
-                .as_slice()
-                .map_err(|_| PyValueError::new_err(format!("{label} must be C-contiguous")))?;
-            return Ok(Some(Self {
-                type_tag: TYPE_MAT3X3_F64,
-                slot_bytes: 72,
-                payload: bytemuck::cast_slice::<f64, u8>(slice).to_vec(),
-            }));
         }
         Ok(None)
     }
@@ -562,12 +561,12 @@ fn try_add_arrays_batch_fast_canonical(
     properties: Option<&Bound<'_, PyDict>>,
     atom_properties: Option<&Bound<'_, PyDict>>,
 ) -> PyResult<bool> {
-    let Ok(positions) = positions.cast::<PyArray3<f32>>() else {
+    let Some(PyFloatArray3::F32(positions)) = PyFloatArray3::from_any(positions) else {
         return Ok(false);
     };
     let energy = match energy {
         Some(value) => {
-            let Ok(arr) = value.cast::<PyArray1<f64>>() else {
+            let Some(PyFloatArray1::F64(arr)) = PyFloatArray1::from_any(value) else {
                 return Ok(false);
             };
             Some(arr)
@@ -576,7 +575,7 @@ fn try_add_arrays_batch_fast_canonical(
     };
     let forces = match forces {
         Some(value) => {
-            let Ok(arr) = value.cast::<PyArray3<f32>>() else {
+            let Some(PyFloatArray3::F32(arr)) = PyFloatArray3::from_any(value) else {
                 return Ok(false);
             };
             Some(arr)
@@ -585,7 +584,7 @@ fn try_add_arrays_batch_fast_canonical(
     };
     let charges = match charges {
         Some(value) => {
-            let Ok(arr) = value.cast::<PyArray2<f64>>() else {
+            let Some(PyFloatArray2::F64(arr)) = PyFloatArray2::from_any(value) else {
                 return Ok(false);
             };
             Some(arr)
@@ -594,7 +593,7 @@ fn try_add_arrays_batch_fast_canonical(
     };
     let velocities = match velocities {
         Some(value) => {
-            let Ok(arr) = value.cast::<PyArray3<f32>>() else {
+            let Some(PyFloatArray3::F32(arr)) = PyFloatArray3::from_any(value) else {
                 return Ok(false);
             };
             Some(arr)
@@ -933,41 +932,45 @@ fn try_add_arrays_batch_fast_canonical(
 }
 
 fn extract_positions_payload(value: &Bound<'_, PyAny>) -> PyResult<(usize, usize, u8, Vec<u8>)> {
-    if let Ok(arr) = value.cast::<PyArray3<f32>>() {
-        let readonly = arr.readonly();
-        let view = readonly.as_array();
-        if view.shape().len() != 3 || view.shape()[2] != 3 {
-            return Err(PyValueError::new_err(
-                "positions must have shape (batch, n_atoms, 3)",
-            ));
+    if let Some(arr) = PyFloatArray3::from_any(value) {
+        match arr {
+            PyFloatArray3::F32(arr) => {
+                let readonly = arr.readonly();
+                let view = readonly.as_array();
+                if view.shape().len() != 3 || view.shape()[2] != 3 {
+                    return Err(PyValueError::new_err(
+                        "positions must have shape (batch, n_atoms, 3)",
+                    ));
+                }
+                let slice = readonly
+                    .as_slice()
+                    .map_err(|_| PyValueError::new_err("positions must be C-contiguous"))?;
+                return Ok((
+                    view.shape()[0],
+                    view.shape()[1],
+                    TYPE_VEC3_F32,
+                    bytemuck::cast_slice::<f32, u8>(slice).to_vec(),
+                ));
+            }
+            PyFloatArray3::F64(arr) => {
+                let readonly = arr.readonly();
+                let view = readonly.as_array();
+                if view.shape().len() != 3 || view.shape()[2] != 3 {
+                    return Err(PyValueError::new_err(
+                        "positions must have shape (batch, n_atoms, 3)",
+                    ));
+                }
+                let slice = readonly
+                    .as_slice()
+                    .map_err(|_| PyValueError::new_err("positions must be C-contiguous"))?;
+                return Ok((
+                    view.shape()[0],
+                    view.shape()[1],
+                    TYPE_VEC3_F64,
+                    bytemuck::cast_slice::<f64, u8>(slice).to_vec(),
+                ));
+            }
         }
-        let slice = readonly
-            .as_slice()
-            .map_err(|_| PyValueError::new_err("positions must be C-contiguous"))?;
-        return Ok((
-            view.shape()[0],
-            view.shape()[1],
-            TYPE_VEC3_F32,
-            bytemuck::cast_slice::<f32, u8>(slice).to_vec(),
-        ));
-    }
-    if let Ok(arr) = value.cast::<PyArray3<f64>>() {
-        let readonly = arr.readonly();
-        let view = readonly.as_array();
-        if view.shape().len() != 3 || view.shape()[2] != 3 {
-            return Err(PyValueError::new_err(
-                "positions must have shape (batch, n_atoms, 3)",
-            ));
-        }
-        let slice = readonly
-            .as_slice()
-            .map_err(|_| PyValueError::new_err("positions must be C-contiguous"))?;
-        return Ok((
-            view.shape()[0],
-            view.shape()[1],
-            TYPE_VEC3_F64,
-            bytemuck::cast_slice::<f64, u8>(slice).to_vec(),
-        ));
     }
     Err(PyValueError::new_err(
         "positions must be a float32 or float64 ndarray with shape (batch, n_atoms, 3)",
@@ -1192,133 +1195,94 @@ pub(super) fn add_arrays_batch_impl(
 
     let mut builtin_columns = Vec::new();
     if let Some(energy) = energy {
-        if let Ok(arr) = energy.cast::<PyArray1<f32>>() {
-            builtin_columns.push(extract_builtin_scalar_column(
-                arr,
-                batch,
-                "energy",
-                TYPE_FLOAT32,
-            )?);
-        } else if let Ok(arr) = energy.cast::<PyArray1<f64>>() {
-            builtin_columns.push(extract_builtin_scalar_column(
-                arr, batch, "energy", TYPE_FLOAT,
-            )?);
-        } else {
+        let Some(array) = PyFloatArray1::from_any(energy) else {
             return Err(PyValueError::new_err(
                 "energy must be a float32 or float64 ndarray with shape (batch,)",
             ));
-        }
+        };
+        builtin_columns.push(match array {
+            PyFloatArray1::F32(arr) => {
+                extract_builtin_scalar_column(&arr, batch, "energy", TYPE_FLOAT32)?
+            }
+            PyFloatArray1::F64(arr) => {
+                extract_builtin_scalar_column(&arr, batch, "energy", TYPE_FLOAT)?
+            }
+        });
     }
     if let Some(forces) = forces {
-        if let Ok(arr) = forces.cast::<PyArray3<f32>>() {
-            builtin_columns.push(extract_builtin_vec3_column(
-                arr,
-                batch,
-                n_atoms,
-                "forces",
-                TYPE_VEC3_F32,
-            )?);
-        } else if let Ok(arr) = forces.cast::<PyArray3<f64>>() {
-            builtin_columns.push(extract_builtin_vec3_column(
-                arr,
-                batch,
-                n_atoms,
-                "forces",
-                TYPE_VEC3_F64,
-            )?);
-        } else {
+        let Some(array) = PyFloatArray3::from_any(forces) else {
             return Err(PyValueError::new_err(
                 "forces must be a float32 or float64 ndarray with shape (batch, n_atoms, 3)",
             ));
-        }
+        };
+        builtin_columns.push(match array {
+            PyFloatArray3::F32(arr) => {
+                extract_builtin_vec3_column(&arr, batch, n_atoms, "forces", TYPE_VEC3_F32)?
+            }
+            PyFloatArray3::F64(arr) => {
+                extract_builtin_vec3_column(&arr, batch, n_atoms, "forces", TYPE_VEC3_F64)?
+            }
+        });
     }
     if let Some(charges) = charges {
-        if let Ok(arr) = charges.cast::<PyArray2<f32>>() {
-            builtin_columns.push(extract_builtin_float_array_column(
-                arr,
-                batch,
-                n_atoms,
-                "charges",
-                TYPE_F32_ARRAY,
-            )?);
-        } else if let Ok(arr) = charges.cast::<PyArray2<f64>>() {
-            builtin_columns.push(extract_builtin_float_array_column(
-                arr,
-                batch,
-                n_atoms,
-                "charges",
-                TYPE_F64_ARRAY,
-            )?);
-        } else {
+        let Some(array) = PyFloatArray2::from_any(charges) else {
             return Err(PyValueError::new_err(
                 "charges must be a float32 or float64 ndarray with shape (batch, n_atoms)",
             ));
-        }
+        };
+        builtin_columns.push(match array {
+            PyFloatArray2::F32(arr) => {
+                extract_builtin_float_array_column(&arr, batch, n_atoms, "charges", TYPE_F32_ARRAY)?
+            }
+            PyFloatArray2::F64(arr) => {
+                extract_builtin_float_array_column(&arr, batch, n_atoms, "charges", TYPE_F64_ARRAY)?
+            }
+        });
     }
     if let Some(velocities) = velocities {
-        if let Ok(arr) = velocities.cast::<PyArray3<f32>>() {
-            builtin_columns.push(extract_builtin_vec3_column(
-                arr,
-                batch,
-                n_atoms,
-                "velocities",
-                TYPE_VEC3_F32,
-            )?);
-        } else if let Ok(arr) = velocities.cast::<PyArray3<f64>>() {
-            builtin_columns.push(extract_builtin_vec3_column(
-                arr,
-                batch,
-                n_atoms,
-                "velocities",
-                TYPE_VEC3_F64,
-            )?);
-        } else {
+        let Some(array) = PyFloatArray3::from_any(velocities) else {
             return Err(PyValueError::new_err(
                 "velocities must be a float32 or float64 ndarray with shape (batch, n_atoms, 3)",
             ));
-        }
+        };
+        builtin_columns.push(match array {
+            PyFloatArray3::F32(arr) => {
+                extract_builtin_vec3_column(&arr, batch, n_atoms, "velocities", TYPE_VEC3_F32)?
+            }
+            PyFloatArray3::F64(arr) => {
+                extract_builtin_vec3_column(&arr, batch, n_atoms, "velocities", TYPE_VEC3_F64)?
+            }
+        });
     }
     if let Some(cell) = cell {
-        if let Ok(arr) = cell.cast::<PyArray3<f32>>() {
-            builtin_columns.push(extract_builtin_mat3_column(
-                arr,
-                batch,
-                "cell",
-                TYPE_MAT3X3_F32,
-            )?);
-        } else if let Ok(arr) = cell.cast::<PyArray3<f64>>() {
-            builtin_columns.push(extract_builtin_mat3_column(
-                arr,
-                batch,
-                "cell",
-                TYPE_MAT3X3_F64,
-            )?);
-        } else {
+        let Some(array) = PyFloatArray3::from_any(cell) else {
             return Err(PyValueError::new_err(
                 "cell must be a float32 or float64 ndarray with shape (batch, 3, 3)",
             ));
-        }
+        };
+        builtin_columns.push(match array {
+            PyFloatArray3::F32(arr) => {
+                extract_builtin_mat3_column(&arr, batch, "cell", TYPE_MAT3X3_F32)?
+            }
+            PyFloatArray3::F64(arr) => {
+                extract_builtin_mat3_column(&arr, batch, "cell", TYPE_MAT3X3_F64)?
+            }
+        });
     }
     if let Some(stress) = stress {
-        if let Ok(arr) = stress.cast::<PyArray3<f32>>() {
-            builtin_columns.push(extract_builtin_mat3_column(
-                arr,
-                batch,
-                "stress",
-                TYPE_MAT3X3_F32,
-            )?);
-        } else if let Ok(arr) = stress.cast::<PyArray3<f64>>() {
-            builtin_columns.push(extract_builtin_mat3_column(
-                arr,
-                batch,
-                "stress",
-                TYPE_MAT3X3_F64,
-            )?);
-        } else {
+        let Some(array) = PyFloatArray3::from_any(stress) else {
             return Err(PyValueError::new_err(
                 "stress must be a float32 or float64 ndarray with shape (batch, 3, 3)",
             ));
-        }
+        };
+        builtin_columns.push(match array {
+            PyFloatArray3::F32(arr) => {
+                extract_builtin_mat3_column(&arr, batch, "stress", TYPE_MAT3X3_F32)?
+            }
+            PyFloatArray3::F64(arr) => {
+                extract_builtin_mat3_column(&arr, batch, "stress", TYPE_MAT3X3_F64)?
+            }
+        });
     }
     if let Some(pbc) = pbc {
         builtin_columns.push(extract_builtin_pbc_column(pbc, batch)?);

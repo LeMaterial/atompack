@@ -50,26 +50,15 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
 
             let compression = inner.compression();
             let use_mmap = inner.get_compressed_slice(0).is_some();
-            let record_format = inner.record_format();
-            let positions_type = match record_format {
-                RECORD_FORMAT_SOA_V2 => TYPE_VEC3_F32,
-                RECORD_FORMAT_SOA_V3 => inner
-                    .positions_type()
-                    .ok_or_else(|| invalid_data("Missing position dtype for batch"))?,
-                _ => {
-                    return Err(invalid_data(format!(
-                        "Unsupported record format {}",
-                        record_format
-                    )));
-                }
-            };
+            let ctx = SoaContext::from_database(inner)?;
+            let positions_type = ctx.positions_type();
             let schema_info = inner.schema_info();
             let raw_bytes_owned: Option<Vec<Vec<u8>>>;
             let schema: Vec<SectionSchema>;
             let use_ordered_schema: bool;
 
             let ordered_schema_from_first = |bytes: &[u8]| -> atompack::Result<Vec<SectionSchema>> {
-                let first_md = parse_mol_fast_soa(bytes, record_format, Some(positions_type))?;
+                let first_md = parse_mol_fast_soa(bytes, ctx)?;
                 let n = first_md.n_atoms;
                 first_md
                     .sections
@@ -223,16 +212,7 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
                         .insert(entry.key.clone(), index);
                 }
             }
-            let positions_stride = match positions_type {
-                TYPE_VEC3_F32 => 12usize,
-                TYPE_VEC3_F64 => 24usize,
-                _ => {
-                    return Err(invalid_data(format!(
-                        "Unsupported positions type tag {}",
-                        positions_type
-                    )));
-                }
-            };
+            let positions_stride = ctx.layout.positions_stride;
             let mut positions = match positions_type {
                 TYPE_VEC3_F32 => FlatPositions::F32(vec![0f32; total_atoms * 3]),
                 TYPE_VEC3_F64 => FlatPositions::F64(vec![0u8; total_atoms * positions_stride]),
@@ -293,7 +273,7 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
                     .collect();
 
             let process_mol = |i: usize, mol_bytes: &[u8]| -> atompack::Result<()> {
-                let md = parse_mol_fast_soa(mol_bytes, record_format, Some(positions_type))?;
+                let md = parse_mol_fast_soa(mol_bytes, ctx)?;
                 let atom_off = offsets[i];
                 let n = md.n_atoms;
 

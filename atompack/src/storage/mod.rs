@@ -21,7 +21,6 @@
 //! └──────────────────────────────────────┘
 //! ```
 
-use crate::atom::PropertyValue;
 use crate::compression::{CompressionType, compress, decompress};
 use crate::{Error, Molecule, Result};
 use bytemuck::{Pod, Zeroable};
@@ -33,11 +32,13 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+mod dtypes;
 mod header;
 mod index;
 mod schema;
 mod soa;
 
+use self::dtypes::arr;
 use self::header::{Header, encode_header_slot, read_best_header};
 use self::index::{IndexStorage, MoleculeIndex, decode_index, encode_index};
 use self::schema::{
@@ -45,7 +46,7 @@ use self::schema::{
     record_schema, schema_from_molecule, validate_schema_lock_for_record_format,
 };
 use self::soa::{
-    arr, deserialize_molecule_soa, minimum_record_format_for_molecule, serialize_molecule_soa,
+    deserialize_molecule_soa, minimum_record_format_for_molecule, serialize_molecule_soa,
 };
 
 // ---------------------------------------------------------------------------
@@ -178,6 +179,11 @@ pub struct AtomDatabase {
     schema_lock: Option<SchemaLock>,
     file: Option<File>,
     data_mmap: Option<Arc<Mmap>>,
+}
+
+enum AppendSchema<'a> {
+    Infer(Vec<(&'a [u8], Option<u8>)>),
+    Locked(SchemaLock),
 }
 
 impl AtomDatabase {
@@ -469,6 +475,25 @@ impl AtomDatabase {
         Ok(())
     }
 
+    fn ensure_writable_for_append(&self) -> Result<()> {
+        if matches!(&self.index, IndexStorage::MemoryMapped { .. }) {
+            return Err(Error::InvalidData(
+                "Cannot add molecules to a database opened with a memory-mapped index (read-only); reopen without mmap to write."
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn prepare_append<'a>(&mut self, schema: AppendSchema<'a>) -> Result<()> {
+        self.ensure_writable_for_append()?;
+        self.truncate_uncommitted_tail_if_needed()?;
+        match schema {
+            AppendSchema::Infer(records) => self.ensure_schema_compatible(records),
+            AppendSchema::Locked(schema) => self.ensure_schema_lock(&schema),
+        }
+    }
+
     fn write_owned_records(&mut self, records: Vec<(Vec<u8>, u32)>) -> Result<()> {
         let compression = self.compression;
 
@@ -654,24 +679,17 @@ impl AtomDatabase {
     where
         I: IntoIterator<Item = (&'a [u8], u32, Option<u8>)>,
     {
-        if matches!(&self.index, IndexStorage::MemoryMapped { .. }) {
-            return Err(Error::InvalidData(
-                "Cannot add molecules to a database opened with a memory-mapped index (read-only); reopen without mmap to write."
-                    .into(),
-            ));
-        }
-
         let records: Vec<(&[u8], u32, Option<u8>)> = records.into_iter().collect();
         if records.is_empty() {
             return Ok(());
         }
 
-        self.truncate_uncommitted_tail_if_needed()?;
-        self.ensure_schema_compatible(
+        self.prepare_append(AppendSchema::Infer(
             records
                 .iter()
-                .map(|(bytes, _, positions_type_hint)| (*bytes, *positions_type_hint)),
-        )?;
+                .map(|(bytes, _, positions_type_hint)| (*bytes, *positions_type_hint))
+                .collect(),
+        ))?;
         let borrowed = records
             .iter()
             .map(|(bytes, num_atoms, _)| (*bytes, *num_atoms))
@@ -680,19 +698,12 @@ impl AtomDatabase {
     }
 
     fn append_owned_soa_records(&mut self, records: Vec<(Vec<u8>, u32, u8)>) -> Result<()> {
-        if matches!(&self.index, IndexStorage::MemoryMapped { .. }) {
-            return Err(Error::InvalidData(
-                "Cannot add molecules to a database opened with a memory-mapped index (read-only); reopen without mmap to write."
-                    .into(),
-            ));
-        }
-
-        self.truncate_uncommitted_tail_if_needed()?;
-        self.ensure_schema_compatible(
+        self.prepare_append(AppendSchema::Infer(
             records
                 .iter()
-                .map(|(bytes, _, positions_type)| (bytes.as_slice(), Some(*positions_type))),
-        )?;
+                .map(|(bytes, _, positions_type)| (bytes.as_slice(), Some(*positions_type)))
+                .collect(),
+        ))?;
 
         let records = records
             .into_iter()
@@ -706,15 +717,7 @@ impl AtomDatabase {
         records: Vec<(Vec<u8>, u32)>,
         batch_schema: SchemaLock,
     ) -> Result<()> {
-        if matches!(&self.index, IndexStorage::MemoryMapped { .. }) {
-            return Err(Error::InvalidData(
-                "Cannot add molecules to a database opened with a memory-mapped index (read-only); reopen without mmap to write."
-                    .into(),
-            ));
-        }
-
-        self.truncate_uncommitted_tail_if_needed()?;
-        self.ensure_schema_lock(&batch_schema)?;
+        self.prepare_append(AppendSchema::Locked(batch_schema))?;
         self.write_owned_records(records)
     }
 
@@ -723,15 +726,7 @@ impl AtomDatabase {
         records: &[(&[u8], u32)],
         batch_schema: SchemaLock,
     ) -> Result<()> {
-        if matches!(&self.index, IndexStorage::MemoryMapped { .. }) {
-            return Err(Error::InvalidData(
-                "Cannot add molecules to a database opened with a memory-mapped index (read-only); reopen without mmap to write."
-                    .into(),
-            ));
-        }
-
-        self.truncate_uncommitted_tail_if_needed()?;
-        self.ensure_schema_lock(&batch_schema)?;
+        self.prepare_append(AppendSchema::Locked(batch_schema))?;
         self.write_borrowed_records(records)
     }
 

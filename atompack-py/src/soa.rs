@@ -28,11 +28,81 @@ pub(crate) struct SectionSchema {
     pub(crate) slot_bytes: usize,
 }
 
-pub(crate) fn parse_mol_fast_soa_v2(bytes: &[u8]) -> atompack::Result<MolData<'_>> {
+#[derive(Clone, Copy)]
+pub(crate) struct SoaLayout {
+    pub(crate) positions_type: u8,
+    pub(crate) positions_stride: usize,
+}
+
+impl SoaLayout {
+    pub(crate) fn resolve(
+        record_format: u32,
+        positions_type_hint: Option<u8>,
+    ) -> atompack::Result<Self> {
+        match record_format {
+            RECORD_FORMAT_SOA_V2 => Ok(Self {
+                positions_type: TYPE_VEC3_F32,
+                positions_stride: 12,
+            }),
+            RECORD_FORMAT_SOA_V3 => {
+                let positions_type = positions_type_hint
+                    .ok_or_else(|| invalid_data("Missing positions dtype for record format 3"))?;
+                let positions_stride = match positions_type {
+                    TYPE_VEC3_F32 => 12usize,
+                    TYPE_VEC3_F64 => 24usize,
+                    _ => {
+                        return Err(invalid_data(format!(
+                            "Unsupported positions type tag {}",
+                            positions_type
+                        )));
+                    }
+                };
+                Ok(Self {
+                    positions_type,
+                    positions_stride,
+                })
+            }
+            _ => Err(invalid_data(format!(
+                "Unsupported record format {}",
+                record_format
+            ))),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct SoaContext {
+    pub(crate) layout: SoaLayout,
+}
+
+impl SoaContext {
+    pub(crate) fn resolve(
+        record_format: u32,
+        positions_type_hint: Option<u8>,
+    ) -> atompack::Result<Self> {
+        Ok(Self {
+            layout: SoaLayout::resolve(record_format, positions_type_hint)?,
+        })
+    }
+
+    pub(crate) fn from_database(database: &AtomDatabase) -> atompack::Result<Self> {
+        Self::resolve(database.record_format(), database.positions_type())
+    }
+
+    #[inline]
+    pub(crate) fn positions_type(self) -> u8 {
+        self.layout.positions_type
+    }
+}
+
+fn parse_mol_fast_soa_with_layout(
+    bytes: &[u8],
+    layout: SoaLayout,
+) -> atompack::Result<MolData<'_>> {
     let mut pos = 0usize;
     let n_atoms = read_u32_le_at(bytes, &mut pos, "SOA n_atoms")? as usize;
     let positions_len = n_atoms
-        .checked_mul(12)
+        .checked_mul(layout.positions_stride)
         .ok_or_else(|| invalid_data("SOA positions byte length overflow"))?;
     let positions_bytes = read_bytes_at(bytes, &mut pos, positions_len, "SOA positions")?;
     let atomic_numbers_bytes = read_bytes_at(bytes, &mut pos, n_atoms, "SOA atomic_numbers")?;
@@ -70,68 +140,8 @@ pub(crate) fn parse_mol_fast_soa_v2(bytes: &[u8]) -> atompack::Result<MolData<'_
 ///   [n_atoms:u32][positions:n*(12|24)][atomic_numbers:n]
 ///   [n_sections:u16]
 ///   per section: [kind:u8][key_len:u8][key][type_tag:u8][payload_len:u32][payload]
-pub(crate) fn parse_mol_fast_soa(
-    bytes: &[u8],
-    record_format: u32,
-    positions_type_hint: Option<u8>,
-) -> atompack::Result<MolData<'_>> {
-    if record_format == RECORD_FORMAT_SOA_V2 {
-        return parse_mol_fast_soa_v2(bytes);
-    }
-
-    let mut pos = 0usize;
-    let n_atoms = read_u32_le_at(bytes, &mut pos, "SOA n_atoms")? as usize;
-    let positions_type = match record_format {
-        RECORD_FORMAT_SOA_V3 => positions_type_hint
-            .ok_or_else(|| invalid_data("Missing positions dtype for record format 3"))?,
-        _ => {
-            return Err(invalid_data(format!(
-                "Unsupported record format {}",
-                record_format
-            )));
-        }
-    };
-    let positions_stride = match positions_type {
-        TYPE_VEC3_F32 => 12usize,
-        TYPE_VEC3_F64 => 24usize,
-        _ => {
-            return Err(invalid_data(format!(
-                "Unsupported positions type tag {}",
-                positions_type
-            )));
-        }
-    };
-    let positions_len = n_atoms
-        .checked_mul(positions_stride)
-        .ok_or_else(|| invalid_data("SOA positions byte length overflow"))?;
-    let positions_bytes = read_bytes_at(bytes, &mut pos, positions_len, "SOA positions")?;
-    let atomic_numbers_bytes = read_bytes_at(bytes, &mut pos, n_atoms, "SOA atomic_numbers")?;
-    let n_sections = read_u16_le_at(bytes, &mut pos, "SOA n_sections")? as usize;
-
-    let mut sections = Vec::with_capacity(n_sections);
-    for _ in 0..n_sections {
-        let kind = read_u8_at(bytes, &mut pos, "SOA section kind")?;
-        let key_len = read_u8_at(bytes, &mut pos, "SOA section key length")? as usize;
-        let key_bytes = read_bytes_at(bytes, &mut pos, key_len, "SOA section key")?;
-        let key = std::str::from_utf8(key_bytes)
-            .map_err(|_| invalid_data("Invalid UTF-8 in SOA section key"))?;
-        let type_tag = read_u8_at(bytes, &mut pos, "SOA section type tag")?;
-        let payload_len = read_u32_le_at(bytes, &mut pos, "SOA section payload length")? as usize;
-        let payload = read_bytes_at(bytes, &mut pos, payload_len, "SOA section payload")?;
-        sections.push(SectionRef {
-            kind,
-            key,
-            type_tag,
-            payload,
-        });
-    }
-
-    Ok(MolData {
-        n_atoms,
-        positions_bytes,
-        atomic_numbers_bytes,
-        sections,
-    })
+pub(crate) fn parse_mol_fast_soa(bytes: &[u8], ctx: SoaContext) -> atompack::Result<MolData<'_>> {
+    parse_mol_fast_soa_with_layout(bytes, ctx.layout)
 }
 
 pub(crate) fn section_schema_from_ref(
@@ -427,7 +437,7 @@ pub(crate) struct SoaMoleculeView {
 }
 
 impl SoaMoleculeView {
-    fn from_storage_v2(bytes: SoaBytes) -> atompack::Result<Self> {
+    fn from_storage(bytes: SoaBytes, ctx: SoaContext) -> atompack::Result<Self> {
         if bytes.len() < 6 {
             return Err(invalid_data("SOA record too small"));
         }
@@ -436,7 +446,7 @@ impl SoaMoleculeView {
         let mut pos = 4usize;
         let positions_start = pos;
         let positions_len = n_atoms
-            .checked_mul(12)
+            .checked_mul(ctx.layout.positions_stride)
             .ok_or_else(|| invalid_data("SOA positions overflow"))?;
         pos = pos
             .checked_add(positions_len)
@@ -536,7 +546,7 @@ impl SoaMoleculeView {
         Ok(Self {
             bytes,
             n_atoms,
-            positions_type: TYPE_VEC3_F32,
+            positions_type: ctx.positions_type(),
             positions_start,
             positions_len,
             atomic_numbers_start,
@@ -553,182 +563,19 @@ impl SoaMoleculeView {
     }
 
     /// Pure-Rust parser — no Python dependency, safe to call from rayon threads.
-    fn from_storage_inner(
-        bytes: SoaBytes,
-        record_format: u32,
-        positions_type_hint: Option<u8>,
-    ) -> atompack::Result<Self> {
-        if record_format == RECORD_FORMAT_SOA_V2 {
-            return Self::from_storage_v2(bytes);
-        }
-
-        if bytes.len() < 6 {
-            return Err(invalid_data("SOA record too small"));
-        }
-
-        let n_atoms = u32::from_le_bytes(slice_to_array(&bytes[0..4], "SOA atom count")?) as usize;
-        let mut pos = 4usize;
-        let positions_type = match record_format {
-            RECORD_FORMAT_SOA_V3 => positions_type_hint
-                .ok_or_else(|| invalid_data("Missing positions dtype for record format 3"))?,
-            _ => {
-                return Err(invalid_data(format!(
-                    "Unsupported record format {}",
-                    record_format
-                )));
-            }
-        };
-        let positions_stride = match positions_type {
-            TYPE_VEC3_F32 => 12usize,
-            TYPE_VEC3_F64 => 24usize,
-            _ => {
-                return Err(invalid_data(format!(
-                    "Unsupported positions type tag {}",
-                    positions_type
-                )));
-            }
-        };
-        let positions_start = pos;
-        let positions_len = n_atoms
-            .checked_mul(positions_stride)
-            .ok_or_else(|| invalid_data("SOA positions overflow"))?;
-        pos = pos
-            .checked_add(positions_len)
-            .ok_or_else(|| invalid_data("SOA positions overflow"))?;
-        if pos > bytes.len() {
-            return Err(invalid_data("SOA record truncated at positions"));
-        }
-
-        let atomic_numbers_start = pos;
-        pos = pos
-            .checked_add(n_atoms)
-            .ok_or_else(|| invalid_data("SOA atomic_numbers overflow"))?;
-        if pos + 2 > bytes.len() {
-            return Err(invalid_data("SOA record truncated at atomic_numbers"));
-        }
-
-        let n_sections =
-            u16::from_le_bytes(slice_to_array(&bytes[pos..pos + 2], "SOA section count")?) as usize;
-        pos += 2;
-
-        let mut forces = None;
-        let mut energy = None;
-        let mut cell = None;
-        let mut stress = None;
-        let mut charges = None;
-        let mut velocities = None;
-        let mut pbc = None;
-        let mut name = None;
-        let mut custom_sections = Vec::new();
-
-        for _ in 0..n_sections {
-            if pos + 2 > bytes.len() {
-                return Err(invalid_data("SOA section header truncated"));
-            }
-            let kind = bytes[pos];
-            pos += 1;
-            let key_len = bytes[pos] as usize;
-            pos += 1;
-            if pos + key_len > bytes.len() {
-                return Err(invalid_data("SOA section key truncated"));
-            }
-            let key_start = pos;
-            pos += key_len;
-            if pos + 5 > bytes.len() {
-                return Err(invalid_data("SOA section header truncated"));
-            }
-            let type_tag = bytes[pos];
-            pos += 1;
-            let payload_len = u32::from_le_bytes(slice_to_array(
-                &bytes[pos..pos + 4],
-                "SOA section payload length",
-            )?) as usize;
-            pos += 4;
-            let payload_start = pos;
-            pos = pos
-                .checked_add(payload_len)
-                .ok_or_else(|| invalid_data("SOA section payload overflow"))?;
-            if pos > bytes.len() {
-                return Err(invalid_data("SOA section payload truncated"));
-            }
-
-            let key_bytes = &bytes[key_start..key_start + key_len];
-            if kind == KIND_BUILTIN {
-                let slot = (payload_start, payload_len, type_tag);
-                match key_bytes {
-                    b"forces" => forces = Some(slot),
-                    b"energy" => energy = Some(slot),
-                    b"cell" => cell = Some(slot),
-                    b"stress" => stress = Some(slot),
-                    b"charges" => charges = Some(slot),
-                    b"velocities" => velocities = Some(slot),
-                    b"pbc" => pbc = Some(slot),
-                    b"name" => name = Some(slot),
-                    _ => {
-                        custom_sections.push(LazySection {
-                            kind,
-                            key_start,
-                            key_len: key_len as u8,
-                            type_tag,
-                            payload_start,
-                            payload_len,
-                        });
-                    }
-                }
-            } else {
-                custom_sections.push(LazySection {
-                    kind,
-                    key_start,
-                    key_len: key_len as u8,
-                    type_tag,
-                    payload_start,
-                    payload_len,
-                });
-            }
-        }
-
-        Ok(Self {
-            bytes,
-            n_atoms,
-            positions_type,
-            positions_start,
-            positions_len,
-            atomic_numbers_start,
-            forces,
-            energy,
-            cell,
-            stress,
-            charges,
-            velocities,
-            pbc,
-            name,
-            custom_sections,
-        })
+    pub(crate) fn from_owned_bytes(bytes: Vec<u8>, ctx: SoaContext) -> atompack::Result<Self> {
+        Self::from_storage(SoaBytes::Owned(bytes), ctx)
     }
 
-    pub(crate) fn from_bytes_inner(
-        bytes: Vec<u8>,
-        record_format: u32,
-        positions_type_hint: Option<u8>,
-    ) -> atompack::Result<Self> {
-        Self::from_storage_inner(SoaBytes::Owned(bytes), record_format, positions_type_hint)
-    }
-
-    pub(crate) fn from_shared_bytes_inner(
+    pub(crate) fn from_shared_bytes(
         bytes: SharedMmapBytes,
-        record_format: u32,
-        positions_type_hint: Option<u8>,
+        ctx: SoaContext,
     ) -> atompack::Result<Self> {
-        Self::from_storage_inner(SoaBytes::Shared(bytes), record_format, positions_type_hint)
+        Self::from_storage(SoaBytes::Shared(bytes), ctx)
     }
 
-    pub(crate) fn from_bytes(
-        bytes: Vec<u8>,
-        record_format: u32,
-        positions_type_hint: Option<u8>,
-    ) -> PyResult<Self> {
-        Self::from_bytes_inner(bytes, record_format, positions_type_hint)
-            .map_err(|e| PyValueError::new_err(format!("{}", e)))
+    pub(crate) fn from_bytes(bytes: Vec<u8>, ctx: SoaContext) -> PyResult<Self> {
+        Self::from_owned_bytes(bytes, ctx).map_err(|e| PyValueError::new_err(format!("{}", e)))
     }
 
     pub(crate) fn positions_bytes(&self) -> &[u8] {

@@ -60,8 +60,7 @@ mod helpers;
 
 pub(crate) use self::helpers::{
     SoaRecord, SoaSection, build_soa_record, cast_or_decode_f32, cast_or_decode_f64,
-    cast_or_decode_i32, cast_or_decode_i64, parse_float_array_field, parse_mat3_field,
-    parse_vec3_field, pyarray1_from_cow, pyarray2_from_cow,
+    cast_or_decode_i32, cast_or_decode_i64, pyarray1_from_cow, pyarray2_from_cow,
 };
 use self::helpers::{into_py_any, property_section_to_pyobject, property_value_to_pyobject};
 
@@ -457,63 +456,7 @@ impl PyMolecule {
                 "'stress' is a reserved field; use molecule.stress instead",
             ));
         }
-
-        // Try to extract different Python types
-        if let Ok(v) = value.extract::<i64>() {
-            inner.properties.insert(key, PropertyValue::Int(v));
-        } else if let Ok(v) = value.extract::<f64>() {
-            inner.properties.insert(key, PropertyValue::Float(v));
-        } else if let Ok(v) = value.extract::<String>() {
-            inner.properties.insert(key, PropertyValue::String(v));
-        } else if let Ok(arr) = value.cast::<PyArray1<f32>>() {
-            let vec = arr.readonly().as_array().to_vec();
-            inner
-                .properties
-                .insert(key, PropertyValue::Float32Array(vec));
-        } else if let Ok(arr) = value.cast::<PyArray1<f64>>() {
-            let vec = arr.readonly().as_array().to_vec();
-            inner.properties.insert(key, PropertyValue::FloatArray(vec));
-        } else if let Ok(arr) = value.cast::<PyArray1<i32>>() {
-            let vec = arr.readonly().as_array().to_vec();
-            inner.properties.insert(key, PropertyValue::Int32Array(vec));
-        } else if let Ok(arr) = value.cast::<PyArray1<i64>>() {
-            let vec = arr.readonly().as_array().to_vec();
-            inner.properties.insert(key, PropertyValue::IntArray(vec));
-        } else if let Ok(arr) = value.cast::<PyArray2<f32>>() {
-            let readonly = arr.readonly();
-            let arr_view = readonly.as_array();
-            let shape = arr_view.shape();
-            if shape[1] != 3 {
-                return Err(PyValueError::new_err(
-                    "Vec3Array properties must have shape (n, 3)",
-                ));
-            }
-            let vec: Vec<[f32; 3]> = arr_view
-                .outer_iter()
-                .map(|row| [row[0], row[1], row[2]])
-                .collect();
-            inner.properties.insert(key, PropertyValue::Vec3Array(vec));
-        } else if let Ok(arr) = value.cast::<PyArray2<f64>>() {
-            let readonly = arr.readonly();
-            let arr_view = readonly.as_array();
-            let shape = arr_view.shape();
-            if shape[1] != 3 {
-                return Err(PyValueError::new_err(
-                    "Vec3Array properties must have shape (n, 3)",
-                ));
-            }
-            let vec: Vec<[f64; 3]> = arr_view
-                .outer_iter()
-                .map(|row| [row[0], row[1], row[2]])
-                .collect();
-            inner
-                .properties
-                .insert(key, PropertyValue::Vec3ArrayF64(vec));
-        } else {
-            return Err(PyValueError::new_err(
-                "Unsupported property type. Supported: float, int, str, ndarray",
-            ));
-        }
+        inner.properties.insert(key, parse_property_value(value)?);
         Ok(())
     }
 
