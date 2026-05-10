@@ -362,6 +362,22 @@ def test_to_ase_owned_maps_builtins_and_properties() -> None:
     np.testing.assert_array_equal(atoms.arrays["tags"], np.array([3, 4], dtype=np.int32))
 
 
+def test_to_ase_roundtrip_preserves_none_custom_property() -> None:
+    mol = atompack.Molecule.from_arrays(
+        np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
+        np.array([1], dtype=np.uint8),
+    )
+    mol.set_property("nullable", None)
+
+    atoms = mol.to_ase()
+    assert "nullable" in atoms.info
+    assert atoms.info["nullable"] is None
+
+    roundtrip = atompack.from_ase(atoms)
+    assert roundtrip.has_property("nullable") is True
+    assert roundtrip.get_property("nullable") is None
+
+
 def test_to_ase_calc_modes() -> None:
     mol = atompack.Molecule.from_arrays(
         np.array([[0.0, 0.0, 0.0], [1.0, 0.5, 0.0]], dtype=np.float32),
