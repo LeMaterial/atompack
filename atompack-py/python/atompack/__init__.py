@@ -37,11 +37,34 @@ Read back from database:
 `Database.open(path, mmap=False)` if you want to append molecules.
 """
 
+from typing import Any, Iterator
+
 from . import hub
 from ._atompack_rs import PyAtom as Atom
 from ._atompack_rs import PyAtomDatabase as Database
 from ._atompack_rs import PyMolecule as Molecule
 from .ase_bridge import add_ase_batch, from_ase, to_ase, to_ase_batch
+
+
+def _database_iter_batches(
+    database: Database,
+    batch_size: int,
+    *,
+    flat: bool = False,
+    drop_last: bool = False,
+) -> Iterator[list[Molecule] | dict[str, Any]]:
+    if batch_size <= 0:
+        raise ValueError("batch_size must be a positive integer")
+
+    getter = database.get_molecules_flat if flat else database.get_molecules
+    for start in range(0, len(database), batch_size):
+        stop = min(start + batch_size, len(database))
+        if drop_last and stop - start < batch_size:
+            break
+        yield getter(list(range(start, stop)))
+
+
+Database.iter_batches = _database_iter_batches
 
 __version__ = "0.2.1"
 __all__ = [

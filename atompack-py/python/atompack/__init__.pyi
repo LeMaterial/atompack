@@ -1,6 +1,6 @@
 """Type stubs for atompack"""
 
-from typing import Any, Sequence, overload
+from typing import Any, Iterator, Sequence, overload
 
 import numpy as np
 import numpy.typing as npt
@@ -567,6 +567,20 @@ class Database:
 
         Returns a mapping containing the stacked builtin arrays plus nested
         ``properties`` and ``atom_properties`` dictionaries when present.
+        """
+        ...
+    def iter_batches(
+        self,
+        batch_size: int,
+        *,
+        flat: bool = False,
+        drop_last: bool = False,
+    ) -> Iterator[list[Molecule] | dict[str, Any]]:
+        """
+        Yield contiguous batches from the database.
+
+        Set ``flat=True`` to yield ``get_molecules_flat`` payloads instead of
+        materialized Molecule objects.
         """
         ...
     def to_ase_batch(
