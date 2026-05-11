@@ -326,6 +326,41 @@ def test_database_add_arrays_batch_promotes_to_float64_geometry_when_needed(
     assert flat["forces"].dtype == np.float64
 
 
+def test_database_atom_counts_expose_cheap_shape_metadata(tmp_path: Path) -> None:
+    path = tmp_path / "atom_counts.atp"
+    molecules = [
+        atompack.Molecule.from_arrays(
+            np.zeros((1, 3), dtype=np.float32),
+            np.array([1], dtype=np.uint8),
+        ),
+        atompack.Molecule.from_arrays(
+            np.zeros((3, 3), dtype=np.float32),
+            np.array([6, 8, 1], dtype=np.uint8),
+        ),
+        atompack.Molecule.from_arrays(
+            np.zeros((0, 3), dtype=np.float32),
+            np.zeros((0,), dtype=np.uint8),
+        ),
+    ]
+
+    db = atompack.Database(str(path))
+    db.add_molecules(molecules)
+    db.flush()
+
+    reopened = atompack.Database.open(str(path))
+    assert reopened.num_atoms(0) == 1
+    assert reopened.num_atoms(1) == 3
+    assert reopened.num_atoms(2) == 0
+    np.testing.assert_array_equal(reopened.atom_counts(), np.array([1, 3, 0], dtype=np.uint32))
+    np.testing.assert_array_equal(
+        reopened.atom_counts([2, 0]),
+        np.array([0, 1], dtype=np.uint32),
+    )
+
+    with pytest.raises(IndexError, match="out of bounds"):
+        reopened.num_atoms(3)
+
+
 @pytest.mark.parametrize("mmap", [False, True])
 @pytest.mark.parametrize("compression", ["none", "lz4", "zstd"])
 def test_database_single_item_reads_are_view_compatible(
