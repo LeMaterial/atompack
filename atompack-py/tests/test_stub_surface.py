@@ -76,6 +76,9 @@ def test_public_stub_exposes_flat_batch_reader() -> None:
 
 
 def test_hub_stub_has_public_docstrings() -> None:
+    reader_methods = _class_method_names(HUB_STUB, "AtompackReader")
+    assert {"__getitem__", "__iter__"} <= reader_methods
+
     reader_doc = _class_docstring(HUB_STUB, "AtompackReader") or ""
     assert "lexicographically ordered shard set" in reader_doc
 
