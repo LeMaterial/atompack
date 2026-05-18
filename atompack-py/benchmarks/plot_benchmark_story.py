@@ -183,8 +183,8 @@ def _import_plotting():
             "axes.spines.right": False,
             "axes.spines.left": False,
             "axes.spines.bottom": False,
-            "xtick.color": MUTED,
-            "ytick.color": MUTED,
+            "xtick.color": TEXT,
+            "ytick.color": TEXT,
             "xtick.labelsize": 10.5,
             "ytick.labelsize": 10.5,
             "axes.labelsize": 12.5,
@@ -221,7 +221,7 @@ def _errorbar_style(backend: str) -> dict[str, object]:
     }
 
 
-EXCLUDED_BACKENDS: set[str] = set()
+EXCLUDED_BACKENDS: set[str] = {"lmdb_soa"}
 WRITE_EXCLUDED_BACKENDS = {"atompack_ase_batch"}
 
 
@@ -322,7 +322,7 @@ def _style_axes(ax, *, title: str, xlabel: str, ylabel: str = "", log_x: bool = 
 def _add_header(fig, *, title: str, subtitle: str = "") -> None:
     fig.text(0.5, 0.945, title, ha="center", va="center", fontsize=22, fontweight="semibold", color=TEXT)
     if subtitle:
-        fig.text(0.5, 0.912, subtitle, ha="center", va="center", fontsize=11, fontweight="regular", color=MUTED)
+        fig.text(0.5, 0.912, subtitle, ha="center", va="center", fontsize=11, fontweight="regular", color=TEXT)
 
 
 def _add_panel_note(ax, text: str) -> None:
@@ -335,7 +335,7 @@ def _add_panel_note(ax, text: str) -> None:
         va="bottom",
         fontsize=10,
         fontweight="medium",
-        color=MUTED,
+        color=TEXT,
         clip_on=False,
     )
 
@@ -343,7 +343,7 @@ def _add_panel_note(ax, text: str) -> None:
 def _add_footer(fig) -> None:
     fig.text(
         0.5, 0.005, "atompack benchmark suite",
-        ha="center", va="bottom", fontsize=8, color=MUTED, style="italic",
+        ha="center", va="bottom", fontsize=8, color=TEXT, style="italic",
     )
 
 
@@ -388,7 +388,7 @@ def _plot_ranked_bars(
     ax.set_yticklabels([_backend_label(row.backend) for row in ranked])
     for tick, row in zip(ax.get_yticklabels(), ranked):
         if row.backend == "atompack":
-            tick.set_fontweight("medium")
+            tick.set_fontweight("semibold")
             tick.set_color(TEXT)
     ax.invert_yaxis()
     _style_axes(ax, title=title, xlabel="atoms/s" if show_xlabel else "", log_x=True)
@@ -419,7 +419,7 @@ def _plot_ranked_bars(
             va="center",
             fontsize=11,
             fontweight="semibold" if row.backend == "atompack" else "medium",
-            color=_backend_color(row.backend),
+            color=TEXT,
         )
 
 
@@ -559,7 +559,7 @@ def _plot_storage_ratio_lines(ax, rows: list[BenchmarkRow], *, title: str) -> tu
         ha="left",
         va="bottom",
         fontsize=10,
-        color=MUTED,
+        color=TEXT,
     )
     ax.set_xlim(0.78, max(all_values) * 1.08)
 
