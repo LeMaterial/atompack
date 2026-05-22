@@ -60,8 +60,23 @@ fn schema_section(kind: u8, key: &str, type_tag: u8, slot_bytes: usize) -> Datab
     }
 }
 
+fn schema_slot_bytes(kind: u8, key: &str, type_tag: u8, payload_slot_bytes: usize) -> usize {
+    if matches!(type_tag, TYPE_STRING | TYPE_NONE) {
+        0
+    } else if is_per_atom(kind, key, type_tag) {
+        type_tag_elem_bytes(type_tag)
+    } else {
+        payload_slot_bytes
+    }
+}
+
 fn schema_section_from_column(column: &BatchSectionColumn) -> DatabaseSchemaSection {
-    schema_section(column.kind, &column.key, column.type_tag, column.slot_bytes)
+    schema_section(
+        column.kind,
+        &column.key,
+        column.type_tag,
+        schema_slot_bytes(column.kind, &column.key, column.type_tag, column.slot_bytes),
+    )
 }
 
 fn reject_reserved_key(key: &str) -> PyResult<()> {
