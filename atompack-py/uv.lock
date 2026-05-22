@@ -166,7 +166,7 @@ wheels = [
 
 [[package]]
 name = "atompack-db"
-version = "0.3.0"
+version = "0.3.1"
 source = { editable = "." }
 dependencies = [
     { name = "huggingface-hub", version = "0.36.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.9'" },
