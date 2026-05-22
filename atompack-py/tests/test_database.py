@@ -292,6 +292,45 @@ def test_database_add_arrays_batch_roundtrip_with_custom_properties(tmp_path: Pa
     assert second.get_property("phase") == "valid"
 
 
+def test_database_add_arrays_batch_appends_variable_size_atom_properties(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "batch_arrays_variable_atom_props.atp"
+    db = atompack.Database(str(path))
+
+    for n_atoms in (20, 29):
+        positions = np.zeros((1, n_atoms, 3), dtype=np.float32)
+        atomic_numbers = np.ones((1, n_atoms), dtype=np.uint8)
+        db.add_arrays_batch(
+            positions,
+            atomic_numbers,
+            atom_properties={
+                "hidden_scalar": np.full((1, n_atoms), n_atoms, dtype=np.float32),
+                "teacher_forces": np.full((1, n_atoms, 3), n_atoms, dtype=np.float32),
+            },
+        )
+    db.flush()
+
+    reopened = atompack.Database.open(str(path))
+    assert len(reopened) == 2
+
+    flat = reopened.get_molecules_flat([0, 1])["atom_properties"]
+    np.testing.assert_allclose(
+        flat["hidden_scalar"],
+        np.array([20.0] * 20 + [29.0] * 29, dtype=np.float32),
+    )
+    np.testing.assert_allclose(
+        flat["teacher_forces"],
+        np.concatenate(
+            [
+                np.full((20, 3), 20.0, dtype=np.float32),
+                np.full((29, 3), 29.0, dtype=np.float32),
+            ],
+            axis=0,
+        ),
+    )
+
+
 def test_database_add_arrays_batch_promotes_to_float64_geometry_when_needed(
     tmp_path: Path,
 ) -> None:
@@ -324,6 +363,35 @@ def test_database_add_arrays_batch_promotes_to_float64_geometry_when_needed(
     assert first.forces.dtype == np.float64
     assert flat["positions"].dtype == np.float64
     assert flat["forces"].dtype == np.float64
+
+
+def test_database_add_arrays_batch_appends_variable_size_float64_forces(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "batch_arrays_variable_float64_forces.atp"
+    db = atompack.Database(str(path))
+
+    for n_atoms in (20, 29):
+        positions = np.zeros((1, n_atoms, 3), dtype=np.float64)
+        atomic_numbers = np.ones((1, n_atoms), dtype=np.uint8)
+        forces = np.full((1, n_atoms, 3), n_atoms, dtype=np.float64)
+        db.add_arrays_batch(positions, atomic_numbers, forces=forces)
+    db.flush()
+
+    reopened = atompack.Database.open(str(path))
+    flat = reopened.get_molecules_flat([0, 1])
+    assert flat["positions"].dtype == np.float64
+    assert flat["forces"].dtype == np.float64
+    np.testing.assert_allclose(
+        flat["forces"],
+        np.concatenate(
+            [
+                np.full((20, 3), 20.0, dtype=np.float64),
+                np.full((29, 3), 29.0, dtype=np.float64),
+            ],
+            axis=0,
+        ),
+    )
 
 
 @pytest.mark.parametrize("mmap", [False, True])
