@@ -1,8 +1,8 @@
 # Copyright 2026 Entalpic
 from __future__ import annotations
 
-from pathlib import Path
 import pickle
+from pathlib import Path
 
 import atompack
 import numpy as np
@@ -296,6 +296,122 @@ def test_database_add_arrays_batch_roundtrip_with_custom_properties(tmp_path: Pa
     assert second.get_property("phase") == "valid"
 
 
+def test_database_add_arrays_batch_roundtrip_with_tensor_properties(tmp_path: Path) -> None:
+    path = tmp_path / "batch_arrays_tensor_custom.atp"
+    positions = np.array(
+        [
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            [[0.5, 0.0, 0.0], [1.5, 0.0, 0.0]],
+        ],
+        dtype=np.float32,
+    )
+    atomic_numbers = np.array([[6, 8], [1, 8]], dtype=np.uint8)
+    density = np.arange(16, dtype=np.float64).reshape(2, 2, 4)
+    atom_codes = np.arange(8, dtype=np.int32).reshape(2, 2, 2)
+
+    db = atompack.Database(str(path))
+    db.add_arrays_batch(
+        positions,
+        atomic_numbers,
+        properties={"density": density},
+        atom_properties={"atom_codes": atom_codes},
+    )
+    db.flush()
+
+    reopened = atompack.Database.open(str(path))
+    molecules = reopened.get_molecules([0, 1])
+
+    first_density = molecules[0].get_property("density")
+    assert first_density.dtype == np.float64
+    np.testing.assert_array_equal(first_density, density[0])
+
+    second_density = molecules[1].get_property("density")
+    assert second_density.dtype == np.float64
+    np.testing.assert_array_equal(second_density, density[1])
+
+    first_codes = molecules[0].get_property("atom_codes")
+    assert first_codes.dtype == np.int32
+    np.testing.assert_array_equal(first_codes, atom_codes[0])
+
+    second_codes = molecules[1].get_property("atom_codes")
+    assert second_codes.dtype == np.int32
+    np.testing.assert_array_equal(second_codes, atom_codes[1])
+
+
+def test_get_molecules_flat_stacks_uniform_tensor_properties(tmp_path: Path) -> None:
+    path = tmp_path / "flat_tensor_custom.atp"
+    positions = np.array(
+        [
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            [[0.5, 0.0, 0.0], [1.5, 0.0, 0.0]],
+        ],
+        dtype=np.float32,
+    )
+    atomic_numbers = np.array([[6, 8], [1, 8]], dtype=np.uint8)
+    density = np.arange(16, dtype=np.float32).reshape(2, 2, 4)
+    atom_descriptors = np.arange(16, dtype=np.int64).reshape(2, 2, 2, 2)
+
+    db = atompack.Database(str(path))
+    db.add_arrays_batch(
+        positions,
+        atomic_numbers,
+        properties={"density": density},
+        atom_properties={"atom_descriptors": atom_descriptors},
+    )
+    db.flush()
+
+    reopened = atompack.Database.open(str(path))
+    flat = reopened.get_molecules_flat([0, 1])
+
+    flat_density = flat["properties"]["density"]
+    assert flat_density.dtype == np.float32
+    assert flat_density.shape == (2, 2, 4)
+    np.testing.assert_array_equal(flat_density, density)
+
+    flat_descriptors = flat["atom_properties"]["atom_descriptors"]
+    assert flat_descriptors.dtype == np.int64
+    assert flat_descriptors.shape == (4, 2, 2)
+    np.testing.assert_array_equal(flat_descriptors, np.concatenate(atom_descriptors, axis=0))
+
+
+@pytest.mark.parametrize("container", [list, tuple])
+def test_database_add_arrays_batch_rejects_list_tuple_tensor_properties(
+    tmp_path: Path,
+    container: type,
+) -> None:
+    path = tmp_path / f"batch_arrays_reject_{container.__name__}_tensor_list.atp"
+    positions = np.zeros((2, 2, 3), dtype=np.float32)
+    atomic_numbers = np.ones((2, 2), dtype=np.uint8)
+    ragged = container(
+        [
+            np.zeros((2, 4), dtype=np.float32),
+            np.zeros((3, 4), dtype=np.float32),
+        ]
+    )
+
+    db = atompack.Database(str(path))
+    with pytest.raises(
+        ValueError,
+        match=r"requires stacked ndarray tensors|must be a stacked ndarray tensor",
+    ):
+        db.add_arrays_batch(
+            positions,
+            atomic_numbers,
+            properties={"ragged_tensor": ragged},
+        )
+
+    db.add_arrays_batch(
+        positions,
+        atomic_numbers,
+        properties={"phase": ["train", "valid"]},
+    )
+    db.flush()
+
+    reopened = atompack.Database.open(str(path))
+    assert reopened[0].get_property("phase") == "train"
+    assert reopened[1].get_property("phase") == "valid"
+
+
 def test_database_add_arrays_batch_appends_variable_size_atom_properties(
     tmp_path: Path,
 ) -> None:
@@ -541,6 +657,28 @@ def test_database_tensor_properties_allow_value_level_shapes(
     second_descriptor = second.get_property("atom_descriptor")
     assert second_descriptor.shape == (2, 4)
     np.testing.assert_allclose(second_descriptor, np.arange(8, dtype=np.float32).reshape(2, 4))
+
+
+def test_get_molecules_flat_rejects_incompatible_tensor_shapes(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "flat_ragged_tensor_shapes.atp"
+    mol1 = _make_molecule(-6.0)
+    mol1.set_property("density", np.zeros((2, 4), dtype=np.float32))
+
+    mol2 = _make_molecule(-7.0)
+    mol2.set_property("density", np.zeros((4, 4), dtype=np.float32))
+
+    db = atompack.Database(str(path))
+    db.add_molecules([mol1, mol2])
+    db.flush()
+
+    reopened = atompack.Database.open(str(path))
+    with pytest.raises(
+        ValueError,
+        match=r"density.*incompatible shapes.*cannot be flat-batched/concatenated.*get_molecule",
+    ):
+        reopened.get_molecules_flat([0, 1])
 
 
 @pytest.mark.parametrize("mmap", [False, True])

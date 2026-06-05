@@ -9,6 +9,162 @@ enum FlatPositions {
     F64(Vec<u8>),
 }
 
+type TensorSectionPayloads = Vec<Option<Vec<u8>>>;
+
+fn missing_tensor_error(key: &str, index: usize) -> PyErr {
+    PyValueError::new_err(format!(
+        "Tensor property '{}' is missing for selected molecule {}; it cannot be \
+         flat-batched/concatenated. Retrieve molecules individually with get_molecule(s) instead.",
+        key, index
+    ))
+}
+
+fn incompatible_tensor_shapes_error(key: &str, left: &[usize], right: &[usize]) -> PyErr {
+    PyValueError::new_err(format!(
+        "Tensor property '{}' has incompatible shapes {:?} and {:?}; it cannot be \
+         flat-batched/concatenated. Retrieve molecules individually with get_molecule(s) instead.",
+        key, left, right
+    ))
+}
+
+fn incompatible_atom_tensor_suffix_error(key: &str, left: &[usize], right: &[usize]) -> PyErr {
+    PyValueError::new_err(format!(
+        "Atom tensor property '{}' has incompatible per-atom tensor suffix shapes {:?} and {:?}; \
+         it cannot be flat-batched/concatenated. Retrieve molecules individually with \
+         get_molecule(s) instead.",
+        key, left, right
+    ))
+}
+
+fn invalid_atom_tensor_shape_error(
+    key: &str,
+    shape: &[usize],
+    first_dim: Option<usize>,
+    n_atoms: usize,
+) -> PyErr {
+    PyValueError::new_err(format!(
+        "Atom tensor property '{}' has shape {:?}; first dimension {:?} does not match \
+         atom count {}. It cannot be flat-batched/concatenated. Retrieve molecules \
+         individually with get_molecule(s) instead.",
+        key, shape, first_dim, n_atoms
+    ))
+}
+
+fn tensor_array_from_bytes<'py>(
+    py: Python<'py>,
+    type_tag: u8,
+    bytes: Vec<u8>,
+    shape: &[usize],
+) -> PyResult<Py<PyAny>> {
+    Ok(match type_tag {
+        TYPE_TENSOR_F32 => pyarray1_from_cow(py, cast_or_decode_f32(&bytes)?)
+            .reshape(shape)?
+            .into_any()
+            .unbind(),
+        TYPE_TENSOR_F64 => pyarray1_from_cow(py, cast_or_decode_f64(&bytes)?)
+            .reshape(shape)?
+            .into_any()
+            .unbind(),
+        TYPE_TENSOR_I32 => pyarray1_from_cow(py, cast_or_decode_i32(&bytes)?)
+            .reshape(shape)?
+            .into_any()
+            .unbind(),
+        TYPE_TENSOR_I64 => pyarray1_from_cow(py, cast_or_decode_i64(&bytes)?)
+            .reshape(shape)?
+            .into_any()
+            .unbind(),
+        _ => {
+            return Err(PyValueError::new_err(format!(
+                "Unsupported tensor type tag {}",
+                type_tag
+            )));
+        }
+    })
+}
+
+fn flat_tensor_array<'py>(
+    py: Python<'py>,
+    section: &SectionSchema,
+    payloads: &[Option<Vec<u8>>],
+    n_atoms_vec: &[u32],
+    total_atoms: usize,
+) -> PyResult<Py<PyAny>> {
+    let mut data = Vec::new();
+
+    if section.per_atom {
+        let mut expected_suffix: Option<Vec<usize>> = None;
+        for (index, payload) in payloads.iter().enumerate() {
+            let payload = payload
+                .as_ref()
+                .ok_or_else(|| missing_tensor_error(&section.key, index))?;
+            let (shape, data_offset) =
+                crate::soa::tensor_shape_from_payload(section.type_tag, payload.as_slice())
+                    .map_err(|e| PyValueError::new_err(format!("{}", e)))?;
+            let n_atoms = n_atoms_vec[index] as usize;
+            let Some((&first_dim, suffix)) = shape.split_first() else {
+                return Err(invalid_atom_tensor_shape_error(
+                    &section.key,
+                    &shape,
+                    None,
+                    n_atoms,
+                ));
+            };
+            if first_dim != n_atoms {
+                return Err(invalid_atom_tensor_shape_error(
+                    &section.key,
+                    &shape,
+                    Some(first_dim),
+                    n_atoms,
+                ));
+            }
+            if let Some(expected) = &expected_suffix {
+                if expected.as_slice() != suffix {
+                    return Err(incompatible_atom_tensor_suffix_error(
+                        &section.key,
+                        expected,
+                        suffix,
+                    ));
+                }
+            } else {
+                expected_suffix = Some(suffix.to_vec());
+            }
+            data.extend_from_slice(&payload[data_offset..]);
+        }
+        let suffix = expected_suffix.unwrap_or_default();
+        let mut output_shape = Vec::with_capacity(1 + suffix.len());
+        output_shape.push(total_atoms);
+        output_shape.extend(suffix);
+        tensor_array_from_bytes(py, section.type_tag, data, &output_shape)
+    } else {
+        let mut expected_shape: Option<Vec<usize>> = None;
+        for (index, payload) in payloads.iter().enumerate() {
+            let payload = payload
+                .as_ref()
+                .ok_or_else(|| missing_tensor_error(&section.key, index))?;
+            let (shape, data_offset) =
+                crate::soa::tensor_shape_from_payload(section.type_tag, payload.as_slice())
+                    .map_err(|e| PyValueError::new_err(format!("{}", e)))?;
+            if let Some(expected) = &expected_shape {
+                if expected != &shape {
+                    return Err(incompatible_tensor_shapes_error(
+                        &section.key,
+                        expected,
+                        &shape,
+                    ));
+                }
+            } else {
+                expected_shape = Some(shape.clone());
+            }
+            data.extend_from_slice(&payload[data_offset..]);
+        }
+        let tensor_shape = expected_shape.unwrap_or_default();
+        let mut output_shape = Vec::with_capacity(1 + tensor_shape.len());
+        output_shape.push(payloads.len());
+        output_shape.extend(tensor_shape);
+        tensor_array_from_bytes(py, section.type_tag, data, &output_shape)
+    }
+}
+
 pub(super) fn get_molecules_flat_soa_impl<'py>(
     inner: &AtomDatabase,
     py: Python<'py>,
@@ -223,7 +379,7 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
             let mut section_buffers: Vec<Vec<u8>> = schema
                 .iter()
                 .map(|s| {
-                    if s.slot_bytes == 0 {
+                    if s.slot_bytes == 0 || is_tensor_type_tag(s.type_tag) {
                         Vec::new()
                     } else if s.per_atom {
                         vec![0u8; total_atoms * s.elem_bytes]
@@ -236,7 +392,17 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
             let mut string_sections: Vec<Option<Vec<Option<String>>>> = schema
                 .iter()
                 .map(|s| {
-                    if s.slot_bytes == 0 {
+                    if matches!(s.type_tag, TYPE_STRING | TYPE_NONE) {
+                        Some(vec![None; n_mols])
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let mut tensor_sections: Vec<Option<TensorSectionPayloads>> = schema
+                .iter()
+                .map(|s| {
+                    if is_tensor_type_tag(s.type_tag) {
                         Some(vec![None; n_mols])
                     } else {
                         None
@@ -268,6 +434,11 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
 
             let string_mutexes: Vec<Option<std::sync::Mutex<&mut Vec<Option<String>>>>> =
                 string_sections
+                    .iter_mut()
+                    .map(|opt| opt.as_mut().map(std::sync::Mutex::new))
+                    .collect();
+            let tensor_mutexes: Vec<Option<std::sync::Mutex<&mut TensorSectionPayloads>>> =
+                tensor_sections
                     .iter_mut()
                     .map(|opt| opt.as_mut().map(std::sync::Mutex::new))
                     .collect();
@@ -340,7 +511,12 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
                             )));
                         }
 
-                        if schema_entry.per_atom {
+                        if is_tensor_type_tag(schema_entry.type_tag) {
+                            let _ = crate::soa::tensor_shape_from_payload(
+                                schema_entry.type_tag,
+                                sec.payload,
+                            )?;
+                        } else if schema_entry.per_atom {
                             let expected =
                                 n.checked_mul(schema_entry.elem_bytes).ok_or_else(|| {
                                     invalid_data(format!(
@@ -367,7 +543,14 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
                             )));
                         }
 
-                        if schema_entry.slot_bytes == 0 {
+                        if is_tensor_type_tag(schema_entry.type_tag) {
+                            if let Some(ref mtx) = tensor_mutexes[section_idx] {
+                                let mut guard = mtx
+                                    .lock()
+                                    .map_err(|_| invalid_data("tensor section mutex poisoned"))?;
+                                guard[i] = Some(sec.payload.to_vec());
+                            }
+                        } else if schema_entry.slot_bytes == 0 {
                             if schema_entry.type_tag == TYPE_NONE {
                                 continue;
                             }
@@ -424,7 +607,12 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
                             )));
                         }
 
-                        if schema_entry.per_atom {
+                        if is_tensor_type_tag(schema_entry.type_tag) {
+                            let _ = crate::soa::tensor_shape_from_payload(
+                                schema_entry.type_tag,
+                                sec.payload,
+                            )?;
+                        } else if schema_entry.per_atom {
                             let expected =
                                 n.checked_mul(schema_entry.elem_bytes).ok_or_else(|| {
                                     invalid_data(format!(
@@ -451,7 +639,14 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
                             )));
                         }
 
-                        if schema_entry.slot_bytes == 0 {
+                        if is_tensor_type_tag(schema_entry.type_tag) {
+                            if let Some(ref mtx) = tensor_mutexes[section_idx] {
+                                let mut guard = mtx
+                                    .lock()
+                                    .map_err(|_| invalid_data("tensor section mutex poisoned"))?;
+                                guard[i] = Some(sec.payload.to_vec());
+                            }
+                        } else if schema_entry.slot_bytes == 0 {
                             if schema_entry.type_tag == TYPE_NONE {
                                 continue;
                             }
@@ -541,6 +736,7 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
                 schema,
                 section_buffers,
                 string_sections,
+                tensor_sections,
                 total_atoms,
             )))
         })
@@ -553,6 +749,7 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
         schema,
         section_buffers,
         string_results,
+        tensor_results,
         total_atoms,
     ) = match result {
         None => {
@@ -571,7 +768,7 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
     };
 
     let dict = PyDict::new(py);
-    dict.set_item("n_atoms", PyArray1::from_vec(py, n_atoms_vec))?;
+    dict.set_item("n_atoms", PyArray1::from_slice(py, &n_atoms_vec))?;
     match positions {
         FlatPositions::F32(values) => {
             dict.set_item(
@@ -591,16 +788,27 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
     let atom_props_dict = PyDict::new(py);
     let mol_props_dict = PyDict::new(py);
 
-    for ((s, buf), str_result) in schema
+    for (((s, buf), str_result), tensor_result) in schema
         .iter()
         .zip(section_buffers.into_iter())
         .zip(string_results.iter())
+        .zip(tensor_results.iter())
     {
         let target = match s.kind {
             KIND_ATOM_PROP => &atom_props_dict,
             KIND_MOL_PROP => &mol_props_dict,
             _ => &dict,
         };
+
+        if is_tensor_type_tag(s.type_tag) {
+            if let Some(payloads) = tensor_result {
+                target.set_item(
+                    &s.key,
+                    flat_tensor_array(py, s, payloads, &n_atoms_vec, total_atoms)?,
+                )?;
+            }
+            continue;
+        }
 
         if s.slot_bytes == 0 {
             if let Some(strings) = str_result {
