@@ -22,6 +22,16 @@ _ASE_RESERVED_ARRAYS = {"numbers", "positions"}
 _ASE_TYPES = None
 _CALC_MODES = {"singlepoint", "nocopy", "none"}
 _UNSUPPORTED_PROPERTY = object()
+_SUPPORTED_ARRAY_DTYPES = {
+    np.dtype(np.float32),
+    np.dtype(np.float64),
+    np.dtype(np.int32),
+    np.dtype(np.int64),
+}
+_SUPPORTED_CUSTOM_PROPERTY_TEXT = (
+    "supported values are None, scalar int/float/bool, str, or ndarray-like "
+    "values with dtype float32, float64, int32, or int64"
+)
 
 
 def _voigt6_to_mat3x3(stress):
@@ -53,36 +63,50 @@ def _get_stress(atoms):
     return None
 
 
-def _coerce_property(value, n_atoms):
+def _coerce_property(value):
     if value is None:
         return None
-    if isinstance(value, (str, bool, int, float, np.integer, np.floating)):
-        if isinstance(value, str):
-            return value
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (bool, int, float, np.integer, np.floating)):
         if isinstance(value, (bool, int, np.integer)):
             return int(value)
         return float(value)
 
-    arr = np.asarray(value)
+    try:
+        arr = np.asarray(value)
+    except Exception:
+        return _UNSUPPORTED_PROPERTY
+
     if arr.ndim == 0 and arr.dtype.kind in {"b", "i", "u", "f"}:
         return arr.item()
-    if arr.ndim == 1 and arr.shape[0] == n_atoms:
-        if arr.dtype == np.float32:
-            return arr.astype(np.float32, copy=False)
-        if arr.dtype.kind == "f":
-            return arr.astype(np.float64, copy=False)
-        if arr.dtype == np.int32:
-            return arr.astype(np.int32, copy=False)
-        if arr.dtype.kind in {"b", "i", "u"}:
-            return arr.astype(np.int64, copy=False)
-    if arr.ndim == 2 and arr.shape == (n_atoms, 3) and arr.dtype.kind == "f":
-        if arr.dtype == np.float32:
-            return arr.astype(np.float32, copy=False)
-        return arr.astype(np.float64, copy=False)
+    if arr.dtype in _SUPPORTED_ARRAY_DTYPES:
+        return arr.astype(arr.dtype, copy=False)
     return _UNSUPPORTED_PROPERTY
 
 
-def _merge_properties(properties, builtins, values, n_atoms):
+def _unsupported_property_reason(value):
+    try:
+        arr = np.asarray(value)
+    except Exception as exc:
+        return f"could not convert value to an ndarray: {exc}"
+    return (
+        f"got value of type {type(value).__name__} with ndarray dtype "
+        f"{arr.dtype} and shape {arr.shape}; {_SUPPORTED_CUSTOM_PROPERTY_TEXT}"
+    )
+
+
+def _coerce_custom_property(key, value, source):
+    coerced = _coerce_property(value)
+    if coerced is _UNSUPPORTED_PROPERTY:
+        raise TypeError(
+            f"Unsupported ASE custom property {key!r} from {source}: "
+            f"{_unsupported_property_reason(value)}"
+        )
+    return coerced
+
+
+def _merge_properties(properties, builtins, values, source):
     for key, value in values.items():
         if key in _BUILTIN_FIELDS:
             # Builtin keys in atoms.info / info-override go to the builtins
@@ -95,9 +119,7 @@ def _merge_properties(properties, builtins, values, n_atoms):
                 if arr.shape == (3, 3) and arr.dtype.kind == "f":
                     builtins["stress"] = arr.astype(np.float64, copy=False)
             continue
-        coerced = _coerce_property(value, n_atoms)
-        if coerced is not _UNSUPPORTED_PROPERTY:
-            properties[key] = coerced
+        properties[key] = _coerce_custom_property(key, value, source)
 
 
 def _extract_ase_record(
@@ -110,6 +132,7 @@ def _extract_ase_record(
     cell=None,
     stress=None,
     copy_info=True,
+    copy_arrays=True,
     info=None,
 ):
     positions = np.asarray(atoms.get_positions(), dtype=np.float32)
@@ -181,7 +204,7 @@ def _extract_ase_record(
     properties = {}
 
     arrays = getattr(atoms, "arrays", None)
-    if isinstance(arrays, dict):
+    if copy_arrays and isinstance(arrays, dict):
         for key, value in arrays.items():
             # Skip both ASE-reserved geometry keys ("positions", "numbers")
             # and atompack builtin field names. A user who stashes "forces"
@@ -189,23 +212,19 @@ def _extract_ase_record(
             # builtins["forces"] (from get_forces()) and properties["forces"].
             if key in _ASE_RESERVED_ARRAYS or key in _BUILTIN_FIELDS:
                 continue
-            coerced = _coerce_property(value, n_atoms)
-            if coerced is not _UNSUPPORTED_PROPERTY:
-                properties[key] = coerced
+            properties[key] = _coerce_custom_property(key, value, "atoms.arrays")
 
     calc = getattr(atoms, "calc", None)
     results = getattr(calc, "results", None)
     if isinstance(results, dict):
         for key, value in results.items():
             if key not in _BUILTIN_FIELDS:
-                coerced = _coerce_property(value, n_atoms)
-                if coerced is not _UNSUPPORTED_PROPERTY:
-                    properties[key] = coerced
+                properties[key] = _coerce_custom_property(key, value, "atoms.calc.results")
 
     if copy_info and getattr(atoms, "info", None):
-        _merge_properties(properties, builtins, atoms.info, n_atoms)
+        _merge_properties(properties, builtins, atoms.info, "atoms.info")
     if info is not None:
-        _merge_properties(properties, builtins, info, n_atoms)
+        _merge_properties(properties, builtins, info, "info override")
 
     return {
         "positions": positions,
@@ -661,9 +680,15 @@ def from_ase(
     cell=None,
     stress=None,
     copy_info=True,
+    copy_arrays=True,
     info=None,
 ):
-    """Convert one ASE Atoms object to an atompack Molecule."""
+    """Convert one ASE Atoms object to an atompack Molecule.
+
+    Custom values from ``atoms.info``, ``atoms.arrays``, calculator results,
+    and explicit ``info=`` overrides are stored as molecule-scope properties.
+    Array shape is not used to infer atom-property scope during ingestion.
+    """
     return _record_to_molecule(
         _extract_ase_record(
             atoms,
@@ -674,6 +699,7 @@ def from_ase(
             cell=cell,
             stress=stress,
             copy_info=copy_info,
+            copy_arrays=copy_arrays,
             info=info,
         )
     )
@@ -684,6 +710,7 @@ def add_ase_batch(
     atoms_list,
     *,
     copy_info=True,
+    copy_arrays=True,
     info=None,
     batch_size=512,
 ):
@@ -710,7 +737,12 @@ def add_ase_batch(
             slow_records.clear()
 
     for atoms, info_override in zip(atoms_list, info_overrides):
-        record = _extract_ase_record(atoms, copy_info=copy_info, info=info_override)
+        record = _extract_ase_record(
+            atoms,
+            copy_info=copy_info,
+            copy_arrays=copy_arrays,
+            info=info_override,
+        )
         if record["properties"]:
             flush_fast()
             slow_records.append(_record_to_molecule(record))

@@ -201,9 +201,10 @@ class Molecule:
         This reads directly from the molecule getters, so it works for both
         owned and view-backed molecules without going through `atoms()`.
         Geometry/species always become the ASE structure, supported builtin
-        results are attached through `SinglePointCalculator`, per-atom custom
-        arrays go to `atoms.arrays`, and remaining custom properties go to
-        `atoms.info`.
+        results are attached through `SinglePointCalculator`, atom-scope custom
+        properties go to `atoms.arrays`, molecule-scope tensor properties stay
+        in `atoms.info`, and legacy molecule arrays may still be shape-routed to
+        `atoms.arrays`.
         """
         ...
 
@@ -653,6 +654,7 @@ def from_ase(
     cell: npt.NDArray[np.float64] | None = None,
     stress: npt.NDArray[np.float64] | None = None,
     copy_info: bool = True,
+    copy_arrays: bool = True,
     info: dict | None = None,
 ) -> Molecule:
     """
@@ -660,8 +662,9 @@ def from_ase(
 
     This function extracts positions, atomic numbers, and available properties
     (forces, energy, charges, velocities, cell) from an ASE Atoms object and
-    creates a corresponding atompack Molecule. Custom properties from atoms.info
-    dict are also copied by default.
+    creates a corresponding atompack Molecule. Custom properties from
+    atoms.info, atoms.arrays, and calculator results are copied as
+    molecule-scope properties by default.
 
     Parameters
     ----------
@@ -679,7 +682,11 @@ def from_ase(
         Override cell from ASE Atoms. If None, attempts to extract from atoms.
     copy_info : bool, default=True
         If True, copies custom properties from atoms.info dict to molecule properties.
-        Supports: str, int, float, 1D float/int arrays, 2D arrays with shape (n, 3).
+        Supported values are None, scalar int/float/bool, str, and ndarray-like
+        values with dtype float32, float64, int32, or int64.
+    copy_arrays : bool, default=True
+        If True, copies custom values from atoms.arrays to molecule properties.
+        Shape is not used to infer atom-property scope.
     info : dict, optional
         Additional properties to store in the molecule. These will be added after
         copying atoms.info (if copy_info=True), so they can override atoms.info values.
@@ -754,6 +761,7 @@ def add_ase_batch(
     atoms_list: list[object],
     *,
     copy_info: bool = True,
+    copy_arrays: bool = True,
     info: dict | list[dict | None] | None = None,
     batch_size: int = 512,
 ) -> None:
