@@ -66,6 +66,44 @@ The main domain type is ``Molecule``. A molecule stores:
 structure-of-arrays oriented. In practice, Atompack is optimized for moving full molecule records
 between disk, Rust, numpy, and ASE rather than for manipulating atom-by-atom objects in storage.
 
+Custom Properties
+-----------------
+
+Custom properties are dataset-specific values keyed by name. They are separate from builtin fields:
+``energy``, ``forces``, ``charges``, ``velocities``, ``cell``, ``stress``, ``pbc``, ``name``,
+``positions``, and ``atomic_numbers`` keep their dedicated storage and API paths.
+
+Each custom property key has one owner scope:
+
+- molecule properties store one value for the whole molecule
+- atom properties store one value per atom
+
+The same custom key cannot exist in both scopes on one molecule, so property reads do not need a
+scope argument. New custom keys default to molecule scope; new atom properties must be written
+explicitly as atom properties. Overwriting an existing atom property keeps atom scope and validates
+that the new value still has one leading entry per atom.
+
+Custom values can be scalars, strings, ``None``, numeric arrays, or tensor-shaped numeric arrays.
+For tensor-shaped values, Atompack preserves the dtype and the shape of each stored value. Tensor
+shape is value-level metadata, not a global schema constraint: the same key may have shape
+``(128,)`` on one molecule and ``(4, 32)`` on another. Atom-scoped tensor values must still have
+``n_atoms`` as their first dimension; trailing dimensions are arbitrary.
+
+This flexibility applies to per-molecule storage and retrieval. APIs that build one concatenated
+array are necessarily stricter:
+
+- ``Database.add_arrays_batch(...)`` accepts tensor custom properties as stacked ndarrays, not
+  lists or tuples of differently shaped arrays. Existing ``list[str]`` molecule properties remain
+  valid for batched string columns.
+- ``Database.get_molecules_flat(...)`` can concatenate tensor properties only when the selected
+  records have compatible shapes for that key. If shapes differ, the dataset is still valid, but
+  callers should retrieve molecule records with ``db[i]`` or ``db.get_molecules(...)`` instead of
+  asking for a flat representation.
+
+ASE ingestion follows the same ownership rule. ``from_ase(...)`` copies supported custom ndarray
+values as molecule properties and does not infer atom-property scope from ``atoms.arrays``,
+``atoms.info``, calculator results, or ndarray shape.
+
 Component Overview
 ------------------
 
