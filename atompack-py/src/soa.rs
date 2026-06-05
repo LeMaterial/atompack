@@ -149,9 +149,16 @@ pub(crate) fn section_schema_from_ref(
     n_atoms: usize,
 ) -> atompack::Result<SectionSchema> {
     let per_atom = is_per_atom(section.kind, section.key, section.type_tag);
+    let tensor_type = is_tensor_type_tag(section.type_tag);
     let elem_bytes = match section.type_tag {
         TYPE_NONE => 0,
         TYPE_STRING => 0,
+        tag if tensor_type => tensor_type_tag_elem_bytes(tag).ok_or_else(|| {
+            invalid_data(format!(
+                "Unsupported tensor type tag {} for key '{}'",
+                tag, section.key
+            ))
+        })?,
         tag if per_atom => {
             let elem_bytes = type_tag_elem_bytes(tag);
             if elem_bytes == 0 {
@@ -169,7 +176,7 @@ pub(crate) fn section_schema_from_ref(
         TYPE_MAT3X3_F64 => 72,
         _ => section.payload.len(),
     };
-    let slot_bytes = if matches!(section.type_tag, TYPE_STRING | TYPE_NONE) {
+    let slot_bytes = if matches!(section.type_tag, TYPE_STRING | TYPE_NONE) || tensor_type {
         0
     } else if per_atom {
         elem_bytes
@@ -214,6 +221,26 @@ pub(crate) fn validate_section_payload(
                     "String section '{}' cannot be per-atom in flat extraction",
                     section.key
                 )));
+            }
+        }
+        tag if is_tensor_type_tag(tag) => {
+            let (shape, _) = tensor_shape_from_payload(tag, section.payload)?;
+            if per_atom {
+                match shape.first() {
+                    Some(first_dim) if *first_dim == n_atoms => {}
+                    Some(first_dim) => {
+                        return Err(invalid_data(format!(
+                            "Atom tensor property '{}' first dimension ({}) doesn't match atom count ({})",
+                            section.key, first_dim, n_atoms
+                        )));
+                    }
+                    None => {
+                        return Err(invalid_data(format!(
+                            "Atom tensor property '{}' must have at least one dimension",
+                            section.key
+                        )));
+                    }
+                }
             }
         }
         TYPE_FLOAT | TYPE_INT | TYPE_FLOAT32 | TYPE_BOOL3 | TYPE_MAT3X3_F32 | TYPE_MAT3X3_F64 => {
@@ -278,8 +305,71 @@ pub(crate) fn type_tag_elem_bytes(tag: u8) -> usize {
         TYPE_FLOAT32 => 4,
         TYPE_MAT3X3_F32 => 36,
         TYPE_MAT3X3_F64 => 72,
+        TYPE_TENSOR_F32 | TYPE_TENSOR_I32 => 4,
+        TYPE_TENSOR_F64 | TYPE_TENSOR_I64 => 8,
         _ => 0,
     }
+}
+
+pub(crate) fn is_tensor_type_tag(tag: u8) -> bool {
+    matches!(
+        tag,
+        TYPE_TENSOR_F32 | TYPE_TENSOR_F64 | TYPE_TENSOR_I32 | TYPE_TENSOR_I64
+    )
+}
+
+fn tensor_type_tag_elem_bytes(tag: u8) -> Option<usize> {
+    match tag {
+        TYPE_TENSOR_F32 | TYPE_TENSOR_I32 => Some(4),
+        TYPE_TENSOR_F64 | TYPE_TENSOR_I64 => Some(8),
+        _ => None,
+    }
+}
+
+fn tensor_value_count(shape: &[usize]) -> atompack::Result<usize> {
+    shape.iter().try_fold(1usize, |acc, dim| {
+        acc.checked_mul(*dim)
+            .ok_or_else(|| invalid_data("Tensor shape overflows usize"))
+    })
+}
+
+pub(crate) fn tensor_shape_from_payload(
+    type_tag: u8,
+    payload: &[u8],
+) -> atompack::Result<(Vec<usize>, usize)> {
+    let elem_bytes = tensor_type_tag_elem_bytes(type_tag)
+        .ok_or_else(|| invalid_data(format!("Type tag {} is not a tensor", type_tag)))?;
+    let Some((&rank, rest)) = payload.split_first() else {
+        return Err(invalid_data("Tensor payload missing rank"));
+    };
+    let rank = rank as usize;
+    let shape_bytes = rank
+        .checked_mul(4)
+        .ok_or_else(|| invalid_data("Tensor rank overflow"))?;
+    if rest.len() < shape_bytes {
+        return Err(invalid_data("Tensor payload truncated at shape"));
+    }
+    let mut shape = Vec::with_capacity(rank);
+    for chunk in rest[..shape_bytes].chunks_exact(4) {
+        shape.push(u32::from_le_bytes(slice_to_array(chunk, "tensor shape")?) as usize);
+    }
+    let data_offset = 1 + shape_bytes;
+    let data_len = payload.len() - data_offset;
+    if !data_len.is_multiple_of(elem_bytes) {
+        return Err(invalid_data(format!(
+            "Tensor payload length {} is not divisible by element size {}",
+            data_len, elem_bytes
+        )));
+    }
+    let expected = tensor_value_count(&shape)?;
+    let actual = data_len / elem_bytes;
+    if expected != actual {
+        return Err(invalid_data(format!(
+            "Tensor shape {:?} expects {} values, got {}",
+            shape, expected, actual
+        )));
+    }
+    Ok((shape, data_offset))
 }
 
 /// Whether a section with the given kind/key/type_tag is per-atom (vs per-molecule).
@@ -300,8 +390,16 @@ fn database_schema_section(
     n_atoms: usize,
 ) -> PyResult<DatabaseSchemaSection> {
     let per_atom = is_per_atom(kind, key, type_tag);
+    let tensor_type = is_tensor_type_tag(type_tag);
     let elem_bytes = if matches!(type_tag, TYPE_STRING | TYPE_NONE) {
         0
+    } else if tensor_type {
+        tensor_type_tag_elem_bytes(type_tag).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "Unsupported tensor type tag {} for '{}'",
+                type_tag, key
+            ))
+        })?
     } else {
         let elem_bytes = type_tag_elem_bytes(type_tag);
         if elem_bytes == 0 {
@@ -312,7 +410,7 @@ fn database_schema_section(
         }
         elem_bytes
     };
-    let slot_bytes = if matches!(type_tag, TYPE_STRING | TYPE_NONE) {
+    let slot_bytes = if matches!(type_tag, TYPE_STRING | TYPE_NONE) || tensor_type {
         0
     } else if per_atom {
         let expected = n_atoms.checked_mul(elem_bytes).ok_or_else(|| {
@@ -752,14 +850,6 @@ impl SoaMoleculeView {
         Ok(None)
     }
 
-    pub(crate) fn property_keys(&self) -> PyResult<Vec<String>> {
-        self.custom_sections
-            .iter()
-            .filter(|s| s.kind == KIND_MOL_PROP)
-            .map(|s| Ok(self.lazy_section_key(s)?.to_string()))
-            .collect()
-    }
-
     pub(crate) fn atom_at(&self, index: usize) -> PyResult<Option<Atom>> {
         if index >= self.n_atoms {
             return Ok(None);
@@ -1105,7 +1195,7 @@ fn decode_mat3x3_f32(payload: &[u8]) -> PyResult<[[f32; 3]; 3]> {
     ])
 }
 
-fn decode_property_value(type_tag: u8, payload: &[u8]) -> PyResult<PropertyValue> {
+pub(crate) fn decode_property_value(type_tag: u8, payload: &[u8]) -> PyResult<PropertyValue> {
     Ok(match type_tag {
         TYPE_NONE => {
             if !payload.is_empty() {
@@ -1126,6 +1216,38 @@ fn decode_property_value(type_tag: u8, payload: &[u8]) -> PyResult<PropertyValue
         TYPE_F32_ARRAY => PropertyValue::Float32Array(decode_f32_array(payload)?),
         TYPE_VEC3_F64 => PropertyValue::Vec3ArrayF64(decode_vec3_f64(payload)?),
         TYPE_I32_ARRAY => PropertyValue::Int32Array(decode_i32_array(payload)?),
+        TYPE_TENSOR_F32 => {
+            let (shape, data_offset) = tensor_shape_from_payload(type_tag, payload)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            PropertyValue::Tensor(TensorData::F32 {
+                shape,
+                values: decode_f32_array(&payload[data_offset..])?,
+            })
+        }
+        TYPE_TENSOR_F64 => {
+            let (shape, data_offset) = tensor_shape_from_payload(type_tag, payload)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            PropertyValue::Tensor(TensorData::F64 {
+                shape,
+                values: decode_f64_array(&payload[data_offset..])?,
+            })
+        }
+        TYPE_TENSOR_I32 => {
+            let (shape, data_offset) = tensor_shape_from_payload(type_tag, payload)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            PropertyValue::Tensor(TensorData::I32 {
+                shape,
+                values: decode_i32_array(&payload[data_offset..])?,
+            })
+        }
+        TYPE_TENSOR_I64 => {
+            let (shape, data_offset) = tensor_shape_from_payload(type_tag, payload)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            PropertyValue::Tensor(TensorData::I64 {
+                shape,
+                values: decode_i64_array(&payload[data_offset..])?,
+            })
+        }
         _ => {
             return Err(PyValueError::new_err(format!(
                 "Unsupported property type tag {}",

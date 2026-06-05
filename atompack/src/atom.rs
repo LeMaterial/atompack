@@ -3,7 +3,9 @@ use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-pub use crate::types::{FloatArrayData, FloatScalarData, Mat3Data, PropertyValue, Vec3Data};
+pub use crate::types::{
+    FloatArrayData, FloatScalarData, Mat3Data, PropertyValue, TensorData, Vec3Data,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Pod, Zeroable)]
 #[repr(C)]

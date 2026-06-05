@@ -1,5 +1,5 @@
 use super::*;
-use crate::atom::{FloatArrayData, FloatScalarData, Mat3Data, PropertyValue, Vec3Data};
+use crate::atom::{FloatArrayData, FloatScalarData, Mat3Data, PropertyValue, TensorData, Vec3Data};
 
 pub(super) fn arr<const N: usize>(bytes: &[u8]) -> Result<[u8; N]> {
     bytes
@@ -79,6 +79,10 @@ pub(super) fn property_value_type_tag(value: &PropertyValue) -> u8 {
         PropertyValue::Float32Array(_) => TYPE_F32_ARRAY,
         PropertyValue::Vec3ArrayF64(_) => TYPE_VEC3_F64,
         PropertyValue::Int32Array(_) => TYPE_I32_ARRAY,
+        PropertyValue::Tensor(TensorData::F32 { .. }) => TYPE_TENSOR_F32,
+        PropertyValue::Tensor(TensorData::F64 { .. }) => TYPE_TENSOR_F64,
+        PropertyValue::Tensor(TensorData::I32 { .. }) => TYPE_TENSOR_I32,
+        PropertyValue::Tensor(TensorData::I64 { .. }) => TYPE_TENSOR_I64,
     }
 }
 
@@ -93,7 +97,112 @@ pub(super) fn property_value_payload_len(value: &PropertyValue) -> usize {
         PropertyValue::Float32Array(values) => values.len() * 4,
         PropertyValue::Vec3ArrayF64(values) => values.len() * 24,
         PropertyValue::Int32Array(values) => values.len() * 4,
+        PropertyValue::Tensor(values) => tensor_data_payload_len(values),
     }
+}
+
+pub(super) fn is_tensor_type_tag(type_tag: u8) -> bool {
+    matches!(
+        type_tag,
+        TYPE_TENSOR_F32 | TYPE_TENSOR_F64 | TYPE_TENSOR_I32 | TYPE_TENSOR_I64
+    )
+}
+
+pub(super) fn tensor_type_tag_elem_bytes(type_tag: u8) -> Option<usize> {
+    match type_tag {
+        TYPE_TENSOR_F32 | TYPE_TENSOR_I32 => Some(4),
+        TYPE_TENSOR_F64 | TYPE_TENSOR_I64 => Some(8),
+        _ => None,
+    }
+}
+
+fn tensor_value_count(shape: &[usize]) -> Result<usize> {
+    shape.iter().try_fold(1usize, |acc, dim| {
+        acc.checked_mul(*dim)
+            .ok_or_else(|| Error::InvalidData("Tensor shape overflows usize".into()))
+    })
+}
+
+fn tensor_data_payload_len(value: &TensorData) -> usize {
+    let shape = value.shape();
+    let values_len = match value {
+        TensorData::F32 { values, .. } => values.len() * 4,
+        TensorData::F64 { values, .. } => values.len() * 8,
+        TensorData::I32 { values, .. } => values.len() * 4,
+        TensorData::I64 { values, .. } => values.len() * 8,
+    };
+    1 + shape.len() * 4 + values_len
+}
+
+fn extend_tensor_header(buf: &mut Vec<u8>, shape: &[usize]) {
+    buf.push(shape.len() as u8);
+    for dim in shape {
+        buf.extend_from_slice(&(*dim as u32).to_le_bytes());
+    }
+}
+
+fn validate_tensor_data_shape(shape: &[usize], values_len: usize) -> Result<()> {
+    if shape.len() > u8::MAX as usize {
+        return Err(Error::InvalidData(format!(
+            "Tensor rank {} exceeds maximum {}",
+            shape.len(),
+            u8::MAX
+        )));
+    }
+    if shape.iter().any(|dim| *dim > u32::MAX as usize) {
+        return Err(Error::InvalidData(
+            "Tensor dimensions must fit in u32 for storage".into(),
+        ));
+    }
+    let expected = tensor_value_count(shape)?;
+    if expected != values_len {
+        return Err(Error::InvalidData(format!(
+            "Tensor shape {:?} expects {} values, got {}",
+            shape, expected, values_len
+        )));
+    }
+    Ok(())
+}
+
+pub(super) fn tensor_shape_from_payload(
+    type_tag: u8,
+    payload: &[u8],
+) -> Result<(Vec<usize>, usize)> {
+    let elem_bytes = tensor_type_tag_elem_bytes(type_tag)
+        .ok_or_else(|| Error::InvalidData(format!("Type tag {} is not a tensor", type_tag)))?;
+    let Some((&rank, rest)) = payload.split_first() else {
+        return Err(Error::InvalidData("Tensor payload missing rank".into()));
+    };
+    let rank = rank as usize;
+    let shape_bytes = rank
+        .checked_mul(4)
+        .ok_or_else(|| Error::InvalidData("Tensor rank overflow".into()))?;
+    if rest.len() < shape_bytes {
+        return Err(Error::InvalidData(
+            "Tensor payload truncated at shape".into(),
+        ));
+    }
+    let mut shape = Vec::with_capacity(rank);
+    for chunk in rest[..shape_bytes].chunks_exact(4) {
+        shape.push(u32::from_le_bytes(arr(chunk)?) as usize);
+    }
+    let data_offset = 1 + shape_bytes;
+    let data_len = payload.len() - data_offset;
+    if !data_len.is_multiple_of(elem_bytes) {
+        return Err(Error::InvalidData(format!(
+            "Tensor payload length {} is not divisible by element size {}",
+            data_len, elem_bytes
+        )));
+    }
+    let expected = tensor_value_count(&shape)?;
+    let actual = data_len / elem_bytes;
+    if expected != actual {
+        return Err(Error::InvalidData(format!(
+            "Tensor shape {:?} expects {} values, got {}",
+            shape, expected, actual
+        )));
+    }
+    Ok((shape, data_offset))
 }
 
 fn extend_f64(buf: &mut Vec<u8>, values: &[f64]) {
@@ -158,6 +267,34 @@ pub(super) fn property_value_to_bytes(value: &PropertyValue) -> Vec<u8> {
         PropertyValue::Int32Array(values) => {
             let mut payload = Vec::with_capacity(values.len() * 4);
             extend_i32(&mut payload, values);
+            payload
+        }
+        PropertyValue::Tensor(TensorData::F32 { shape, values }) => {
+            validate_tensor_data_shape(shape, values.len()).expect("invalid f32 tensor property");
+            let mut payload = Vec::with_capacity(1 + shape.len() * 4 + values.len() * 4);
+            extend_tensor_header(&mut payload, shape);
+            extend_f32(&mut payload, values);
+            payload
+        }
+        PropertyValue::Tensor(TensorData::F64 { shape, values }) => {
+            validate_tensor_data_shape(shape, values.len()).expect("invalid f64 tensor property");
+            let mut payload = Vec::with_capacity(1 + shape.len() * 4 + values.len() * 8);
+            extend_tensor_header(&mut payload, shape);
+            extend_f64(&mut payload, values);
+            payload
+        }
+        PropertyValue::Tensor(TensorData::I32 { shape, values }) => {
+            validate_tensor_data_shape(shape, values.len()).expect("invalid i32 tensor property");
+            let mut payload = Vec::with_capacity(1 + shape.len() * 4 + values.len() * 4);
+            extend_tensor_header(&mut payload, shape);
+            extend_i32(&mut payload, values);
+            payload
+        }
+        PropertyValue::Tensor(TensorData::I64 { shape, values }) => {
+            validate_tensor_data_shape(shape, values.len()).expect("invalid i64 tensor property");
+            let mut payload = Vec::with_capacity(1 + shape.len() * 4 + values.len() * 8);
+            extend_tensor_header(&mut payload, shape);
+            extend_i64(&mut payload, values);
             payload
         }
     }
@@ -348,6 +485,40 @@ pub(super) fn decode_property_value(type_tag: u8, payload: &[u8]) -> Result<Prop
                     .map(|chunk| Ok(i32::from_le_bytes(arr(chunk)?)))
                     .collect::<Result<_>>()?,
             )
+        }
+        TYPE_TENSOR_F32 => {
+            let (shape, data_offset) = tensor_shape_from_payload(type_tag, payload)?;
+            PropertyValue::Tensor(TensorData::F32 {
+                shape,
+                values: decode_f32_array(&payload[data_offset..])?,
+            })
+        }
+        TYPE_TENSOR_F64 => {
+            let (shape, data_offset) = tensor_shape_from_payload(type_tag, payload)?;
+            PropertyValue::Tensor(TensorData::F64 {
+                shape,
+                values: decode_f64_array(&payload[data_offset..])?,
+            })
+        }
+        TYPE_TENSOR_I32 => {
+            let (shape, data_offset) = tensor_shape_from_payload(type_tag, payload)?;
+            PropertyValue::Tensor(TensorData::I32 {
+                shape,
+                values: payload[data_offset..]
+                    .chunks_exact(4)
+                    .map(|chunk| Ok(i32::from_le_bytes(arr(chunk)?)))
+                    .collect::<Result<_>>()?,
+            })
+        }
+        TYPE_TENSOR_I64 => {
+            let (shape, data_offset) = tensor_shape_from_payload(type_tag, payload)?;
+            PropertyValue::Tensor(TensorData::I64 {
+                shape,
+                values: payload[data_offset..]
+                    .chunks_exact(8)
+                    .map(|chunk| Ok(i64::from_le_bytes(arr(chunk)?)))
+                    .collect::<Result<_>>()?,
+            })
         }
         _ => return Err(Error::InvalidData(format!("Unknown type tag {}", type_tag))),
     })

@@ -13,6 +13,7 @@ pub enum PropertyValue {
     Float32Array(Vec<f32>),
     Vec3ArrayF64(Vec<[f64; 3]>),
     Int32Array(Vec<i32>),
+    Tensor(TensorData),
 }
 
 impl PropertyValue {
@@ -24,12 +25,36 @@ impl PropertyValue {
             PropertyValue::Float32Array(values) => Some(values.len()),
             PropertyValue::Vec3ArrayF64(values) => Some(values.len()),
             PropertyValue::Int32Array(values) => Some(values.len()),
+            PropertyValue::Tensor(values) => values.first_dim(),
             _ => None,
         }
     }
 
     pub fn is_empty(&self) -> bool {
         self.len() == Some(0)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TensorData {
+    F32 { shape: Vec<usize>, values: Vec<f32> },
+    F64 { shape: Vec<usize>, values: Vec<f64> },
+    I32 { shape: Vec<usize>, values: Vec<i32> },
+    I64 { shape: Vec<usize>, values: Vec<i64> },
+}
+
+impl TensorData {
+    pub fn shape(&self) -> &[usize] {
+        match self {
+            Self::F32 { shape, .. }
+            | Self::F64 { shape, .. }
+            | Self::I32 { shape, .. }
+            | Self::I64 { shape, .. } => shape,
+        }
+    }
+
+    pub fn first_dim(&self) -> Option<usize> {
+        self.shape().first().copied()
     }
 }
 

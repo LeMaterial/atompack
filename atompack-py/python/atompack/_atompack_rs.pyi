@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Sequence, overload
+from typing import Any, Literal, Sequence, overload
 
 import numpy as np
 
@@ -329,7 +329,13 @@ class PyMolecule:
         """
         ...
 
-    def set_property(self, key: str, value: Any) -> None:
+    def set_property(
+        self,
+        key: str,
+        value: Any,
+        *,
+        scope: Literal["molecule", "atom"] | None = None,
+    ) -> None:
         """
         Set a custom property.
 
@@ -339,10 +345,12 @@ class PyMolecule:
             Property key
         value : Any
             Property value
+        scope : {"molecule", "atom"}, optional
+            Property scope. Defaults to molecule for new keys.
         """
         ...
 
-    def property_keys(self) -> list[str]:
+    def property_keys(self, *, scope: Literal["molecule", "atom"] | None = None) -> list[str]:
         """
         Get all property keys.
 
@@ -353,7 +361,7 @@ class PyMolecule:
         """
         ...
 
-    def has_property(self, key: str) -> bool:
+    def has_property(self, key: str, *, scope: Literal["molecule", "atom"] | None = None) -> bool:
         """
         Check if a property exists.
 
@@ -361,12 +369,18 @@ class PyMolecule:
         ----------
         key : str
             Property key
+        scope : {"molecule", "atom"}, optional
+            Restrict the lookup to one scope.
 
         Returns
         -------
         bool
             True if property exists, False otherwise
         """
+        ...
+
+    def delete_property(self, key: str) -> None:
+        """Delete a custom property by key."""
         ...
 
     @overload

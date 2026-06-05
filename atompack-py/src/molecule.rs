@@ -65,6 +65,75 @@ pub(crate) use self::helpers::{
 };
 use self::helpers::{into_py_any, property_section_to_pyobject, property_value_to_pyobject};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CustomPropertyScope {
+    Molecule,
+    Atom,
+}
+
+fn parse_custom_property_scope(scope: Option<&str>) -> PyResult<Option<CustomPropertyScope>> {
+    match scope {
+        None => Ok(None),
+        Some("molecule") => Ok(Some(CustomPropertyScope::Molecule)),
+        Some("atom") => Ok(Some(CustomPropertyScope::Atom)),
+        Some(other) => Err(PyValueError::new_err(format!(
+            "scope must be 'molecule' or 'atom', got '{}'",
+            other
+        ))),
+    }
+}
+
+fn atom_property_shape_error(key: &str, actual: usize, n_atoms: usize) -> PyErr {
+    PyValueError::new_err(format!(
+        "Atom property '{}' first dimension ({}) doesn't match atom count ({})",
+        key, actual, n_atoms
+    ))
+}
+
+fn validate_atom_property_value(key: &str, value: &PropertyValue, n_atoms: usize) -> PyResult<()> {
+    match value {
+        PropertyValue::FloatArray(values) if values.len() == n_atoms => Ok(()),
+        PropertyValue::Vec3Array(values) if values.len() == n_atoms => Ok(()),
+        PropertyValue::IntArray(values) if values.len() == n_atoms => Ok(()),
+        PropertyValue::Float32Array(values) if values.len() == n_atoms => Ok(()),
+        PropertyValue::Vec3ArrayF64(values) if values.len() == n_atoms => Ok(()),
+        PropertyValue::Int32Array(values) if values.len() == n_atoms => Ok(()),
+        PropertyValue::Tensor(values) => match values.shape().first() {
+            Some(first_dim) if *first_dim == n_atoms => Ok(()),
+            Some(first_dim) => Err(atom_property_shape_error(key, *first_dim, n_atoms)),
+            None => Err(PyValueError::new_err(format!(
+                "Atom tensor property '{}' must have at least one dimension",
+                key
+            ))),
+        },
+        PropertyValue::FloatArray(values) => {
+            Err(atom_property_shape_error(key, values.len(), n_atoms))
+        }
+        PropertyValue::Vec3Array(values) => {
+            Err(atom_property_shape_error(key, values.len(), n_atoms))
+        }
+        PropertyValue::IntArray(values) => {
+            Err(atom_property_shape_error(key, values.len(), n_atoms))
+        }
+        PropertyValue::Float32Array(values) => {
+            Err(atom_property_shape_error(key, values.len(), n_atoms))
+        }
+        PropertyValue::Vec3ArrayF64(values) => {
+            Err(atom_property_shape_error(key, values.len(), n_atoms))
+        }
+        PropertyValue::Int32Array(values) => {
+            Err(atom_property_shape_error(key, values.len(), n_atoms))
+        }
+        PropertyValue::None
+        | PropertyValue::Float(_)
+        | PropertyValue::Int(_)
+        | PropertyValue::String(_) => Err(PyValueError::new_err(format!(
+            "Atom property '{}' must be a numeric ndarray with first dimension equal to atom count ({})",
+            key, n_atoms
+        ))),
+    }
+}
+
 #[pymethods]
 impl PyMolecule {
     /// Create a new molecule from numpy arrays.
@@ -434,52 +503,167 @@ impl PyMolecule {
         let py = slf.py();
         let molecule = slf.borrow();
         if let Some(inner) = molecule.as_owned() {
-            return match inner.properties.get(key) {
-                Some(v) => property_value_to_pyobject(py, v),
-                None => Err(PyKeyError::new_err(format!("Property '{}' not found", key))),
+            let molecule_value = inner.properties.get(key);
+            let atom_value = inner.atom_properties.get(key);
+            return match (molecule_value, atom_value) {
+                (Some(_), Some(_)) => Err(PyValueError::new_err(format!(
+                    "Property '{}' exists in both molecule and atom scopes",
+                    key
+                ))),
+                (Some(v), None) | (None, Some(v)) => property_value_to_pyobject(py, v),
+                (None, None) => Err(PyKeyError::new_err(format!("Property '{}' not found", key))),
             };
         }
         let view = molecule.as_view().ok_or_else(|| {
             PyValueError::new_err("Molecule is missing both owned and view state")
         })?;
-        match view.find_custom_section(KIND_MOL_PROP, key)? {
-            Some(section) => property_section_to_pyobject(py, view, section),
-            None => Err(PyKeyError::new_err(format!("Property '{}' not found", key))),
+        let molecule_section = view.find_custom_section(KIND_MOL_PROP, key)?;
+        let atom_section = view.find_custom_section(KIND_ATOM_PROP, key)?;
+        match (molecule_section, atom_section) {
+            (Some(_), Some(_)) => Err(PyValueError::new_err(format!(
+                "Property '{}' exists in both molecule and atom scopes",
+                key
+            ))),
+            (Some(section), None) | (None, Some(section)) => {
+                property_section_to_pyobject(py, view, section)
+            }
+            (None, None) => Err(PyKeyError::new_err(format!("Property '{}' not found", key))),
         }
     }
 
     /// Set a custom property
-    fn set_property(&mut self, py: Python<'_>, key: String, value: Py<PyAny>) -> PyResult<()> {
-        let inner = self.ensure_owned()?;
-        let value = value.bind(py);
+    #[pyo3(signature = (key, value, *, scope=None))]
+    fn set_property(
+        &mut self,
+        py: Python<'_>,
+        key: String,
+        value: Py<PyAny>,
+        scope: Option<&str>,
+    ) -> PyResult<()> {
+        let requested_scope = parse_custom_property_scope(scope)?;
+        let n_atoms = self.len();
         if key == "stress" {
             return Err(PyValueError::new_err(
                 "'stress' is a reserved field; use molecule.stress instead",
             ));
         }
-        inner.properties.insert(key, parse_property_value(value)?);
+        let parsed = parse_property_value(value.bind(py))?;
+        let inner = self.ensure_owned()?;
+        let has_molecule = inner.properties.contains_key(&key);
+        let has_atom = inner.atom_properties.contains_key(&key);
+        if has_molecule && has_atom {
+            return Err(PyValueError::new_err(format!(
+                "Property '{}' exists in both molecule and atom scopes",
+                key
+            )));
+        }
+        let target_scope = match (has_molecule, has_atom, requested_scope) {
+            (true, false, None | Some(CustomPropertyScope::Molecule)) => {
+                CustomPropertyScope::Molecule
+            }
+            (true, false, Some(CustomPropertyScope::Atom)) => {
+                return Err(PyValueError::new_err(format!(
+                    "Property '{}' already exists as a molecule property; delete it before setting atom scope",
+                    key
+                )));
+            }
+            (false, true, None | Some(CustomPropertyScope::Atom)) => CustomPropertyScope::Atom,
+            (false, true, Some(CustomPropertyScope::Molecule)) => {
+                return Err(PyValueError::new_err(format!(
+                    "Property '{}' already exists as an atom property; delete it before setting molecule scope",
+                    key
+                )));
+            }
+            (false, false, Some(CustomPropertyScope::Atom)) => CustomPropertyScope::Atom,
+            (false, false, None | Some(CustomPropertyScope::Molecule)) => {
+                CustomPropertyScope::Molecule
+            }
+            (true, true, _) => unreachable!(),
+        };
+        match target_scope {
+            CustomPropertyScope::Molecule => {
+                inner.properties.insert(key, parsed);
+            }
+            CustomPropertyScope::Atom => {
+                validate_atom_property_value(&key, &parsed, n_atoms)?;
+                inner.atom_properties.insert(key, parsed);
+            }
+        }
         Ok(())
     }
 
     /// Get all property keys
-    fn property_keys(&self) -> PyResult<Vec<String>> {
+    #[pyo3(signature = (*, scope=None))]
+    fn property_keys(&self, scope: Option<&str>) -> PyResult<Vec<String>> {
+        let requested_scope = parse_custom_property_scope(scope)?;
         if let Some(inner) = self.as_owned() {
-            Ok(inner.properties.keys().cloned().collect())
+            let mut keys = Vec::new();
+            if requested_scope != Some(CustomPropertyScope::Atom) {
+                keys.extend(inner.properties.keys().cloned());
+            }
+            if requested_scope != Some(CustomPropertyScope::Molecule) {
+                keys.extend(inner.atom_properties.keys().cloned());
+            }
+            keys.sort();
+            Ok(keys)
         } else if let Some(view) = self.as_view() {
-            view.property_keys()
+            let mut keys = Vec::new();
+            for section in &view.custom_sections {
+                let include = match requested_scope {
+                    Some(CustomPropertyScope::Molecule) => section.kind == KIND_MOL_PROP,
+                    Some(CustomPropertyScope::Atom) => section.kind == KIND_ATOM_PROP,
+                    None => matches!(section.kind, KIND_MOL_PROP | KIND_ATOM_PROP),
+                };
+                if include {
+                    keys.push(view.lazy_section_key(section)?.to_string());
+                }
+            }
+            keys.sort();
+            Ok(keys)
         } else {
             Ok(Vec::new())
         }
     }
 
     /// Check if a property exists
-    fn has_property(&self, key: &str) -> PyResult<bool> {
+    #[pyo3(signature = (key, *, scope=None))]
+    fn has_property(&self, key: &str, scope: Option<&str>) -> PyResult<bool> {
+        let requested_scope = parse_custom_property_scope(scope)?;
         if let Some(inner) = self.as_owned() {
-            Ok(inner.properties.contains_key(key))
+            Ok(match requested_scope {
+                Some(CustomPropertyScope::Molecule) => inner.properties.contains_key(key),
+                Some(CustomPropertyScope::Atom) => inner.atom_properties.contains_key(key),
+                None => {
+                    inner.properties.contains_key(key) || inner.atom_properties.contains_key(key)
+                }
+            })
         } else if let Some(view) = self.as_view() {
-            Ok(view.find_custom_section(KIND_MOL_PROP, key)?.is_some())
+            Ok(match requested_scope {
+                Some(CustomPropertyScope::Molecule) => {
+                    view.find_custom_section(KIND_MOL_PROP, key)?.is_some()
+                }
+                Some(CustomPropertyScope::Atom) => {
+                    view.find_custom_section(KIND_ATOM_PROP, key)?.is_some()
+                }
+                None => {
+                    view.find_custom_section(KIND_MOL_PROP, key)?.is_some()
+                        || view.find_custom_section(KIND_ATOM_PROP, key)?.is_some()
+                }
+            })
         } else {
             Ok(false)
+        }
+    }
+
+    /// Delete a custom property by key.
+    fn delete_property(&mut self, key: &str) -> PyResult<()> {
+        let inner = self.ensure_owned()?;
+        let removed_molecule = inner.properties.remove(key).is_some();
+        let removed_atom = inner.atom_properties.remove(key).is_some();
+        if removed_molecule || removed_atom {
+            Ok(())
+        } else {
+            Err(PyKeyError::new_err(format!("Property '{}' not found", key)))
         }
     }
 
@@ -490,17 +674,33 @@ impl PyMolecule {
 
         if let Ok(key) = index.extract::<String>() {
             if let Some(inner) = molecule.as_owned() {
-                return match inner.properties.get(&key) {
-                    Some(v) => property_value_to_pyobject(py, v),
-                    None => Err(PyKeyError::new_err(format!("Property '{}' not found", key))),
+                let molecule_value = inner.properties.get(&key);
+                let atom_value = inner.atom_properties.get(&key);
+                return match (molecule_value, atom_value) {
+                    (Some(_), Some(_)) => Err(PyValueError::new_err(format!(
+                        "Property '{}' exists in both molecule and atom scopes",
+                        key
+                    ))),
+                    (Some(v), None) | (None, Some(v)) => property_value_to_pyobject(py, v),
+                    (None, None) => {
+                        Err(PyKeyError::new_err(format!("Property '{}' not found", key)))
+                    }
                 };
             }
             let view = molecule.as_view().ok_or_else(|| {
                 PyValueError::new_err("Molecule is missing both owned and view state")
             })?;
-            return match view.find_custom_section(KIND_MOL_PROP, &key)? {
-                Some(section) => property_section_to_pyobject(py, view, section),
-                None => Err(PyKeyError::new_err(format!("Property '{}' not found", key))),
+            let molecule_section = view.find_custom_section(KIND_MOL_PROP, &key)?;
+            let atom_section = view.find_custom_section(KIND_ATOM_PROP, &key)?;
+            return match (molecule_section, atom_section) {
+                (Some(_), Some(_)) => Err(PyValueError::new_err(format!(
+                    "Property '{}' exists in both molecule and atom scopes",
+                    key
+                ))),
+                (Some(section), None) | (None, Some(section)) => {
+                    property_section_to_pyobject(py, view, section)
+                }
+                (None, None) => Err(PyKeyError::new_err(format!("Property '{}' not found", key))),
             };
         }
 

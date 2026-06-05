@@ -242,6 +242,76 @@ pub(crate) fn parse_mat3_field(value: &Bound<'_, PyAny>, label: &str) -> PyResul
     array.parse_mat3_data(label)
 }
 
+fn tensor_shape(shape: &[usize], values_len: usize) -> PyResult<Vec<usize>> {
+    let expected = shape.iter().try_fold(1usize, |acc, dim| {
+        acc.checked_mul(*dim)
+            .ok_or_else(|| PyValueError::new_err("Tensor shape overflows usize"))
+    })?;
+    if expected != values_len {
+        return Err(PyValueError::new_err(format!(
+            "Tensor shape {:?} expects {} values, got {}",
+            shape, expected, values_len
+        )));
+    }
+    if shape.len() > u8::MAX as usize {
+        return Err(PyValueError::new_err(format!(
+            "Tensor rank {} exceeds maximum {}",
+            shape.len(),
+            u8::MAX
+        )));
+    }
+    if shape.iter().any(|dim| *dim > u32::MAX as usize) {
+        return Err(PyValueError::new_err(
+            "Tensor dimensions must fit in u32 for storage",
+        ));
+    }
+    Ok(shape.to_vec())
+}
+
+fn parse_tensor_property_value(value: &Bound<'_, PyAny>) -> PyResult<Option<PropertyValue>> {
+    if let Ok(arr) = value.cast::<PyArrayDyn<f32>>() {
+        let readonly = arr.readonly();
+        let view = readonly.as_array();
+        let values: Vec<f32> = view.iter().copied().collect();
+        let shape = tensor_shape(view.shape(), values.len())?;
+        return Ok(Some(PropertyValue::Tensor(TensorData::F32 {
+            shape,
+            values,
+        })));
+    }
+    if let Ok(arr) = value.cast::<PyArrayDyn<f64>>() {
+        let readonly = arr.readonly();
+        let view = readonly.as_array();
+        let values: Vec<f64> = view.iter().copied().collect();
+        let shape = tensor_shape(view.shape(), values.len())?;
+        return Ok(Some(PropertyValue::Tensor(TensorData::F64 {
+            shape,
+            values,
+        })));
+    }
+    if let Ok(arr) = value.cast::<PyArrayDyn<i32>>() {
+        let readonly = arr.readonly();
+        let view = readonly.as_array();
+        let values: Vec<i32> = view.iter().copied().collect();
+        let shape = tensor_shape(view.shape(), values.len())?;
+        return Ok(Some(PropertyValue::Tensor(TensorData::I32 {
+            shape,
+            values,
+        })));
+    }
+    if let Ok(arr) = value.cast::<PyArrayDyn<i64>>() {
+        let readonly = arr.readonly();
+        let view = readonly.as_array();
+        let values: Vec<i64> = view.iter().copied().collect();
+        let shape = tensor_shape(view.shape(), values.len())?;
+        return Ok(Some(PropertyValue::Tensor(TensorData::I64 {
+            shape,
+            values,
+        })));
+    }
+    Ok(None)
+}
+
 pub(crate) fn parse_property_value(value: &Bound<'_, PyAny>) -> PyResult<PropertyValue> {
     if value.is_none() {
         return Ok(PropertyValue::None);
@@ -272,42 +342,39 @@ pub(crate) fn parse_property_value(value: &Bound<'_, PyAny>) -> PyResult<Propert
         });
     }
     if let Some(array) = PyFloatArray2::from_any(value) {
-        return Ok(match array {
+        match array {
             PyFloatArray2::F32(arr) => {
                 let readonly = arr.readonly();
                 let arr_view = readonly.as_array();
                 let shape = arr_view.shape();
-                if shape[1] != 3 {
-                    return Err(PyValueError::new_err(
-                        "Vec3Array properties must have shape (n, 3)",
+                if shape[1] == 3 {
+                    return Ok(PropertyValue::Vec3Array(
+                        arr_view
+                            .outer_iter()
+                            .map(|row| [row[0], row[1], row[2]])
+                            .collect(),
                     ));
                 }
-                PropertyValue::Vec3Array(
-                    arr_view
-                        .outer_iter()
-                        .map(|row| [row[0], row[1], row[2]])
-                        .collect(),
-                )
             }
             PyFloatArray2::F64(arr) => {
                 let readonly = arr.readonly();
                 let arr_view = readonly.as_array();
                 let shape = arr_view.shape();
-                if shape[1] != 3 {
-                    return Err(PyValueError::new_err(
-                        "Vec3Array properties must have shape (n, 3)",
+                if shape[1] == 3 {
+                    return Ok(PropertyValue::Vec3ArrayF64(
+                        arr_view
+                            .outer_iter()
+                            .map(|row| [row[0], row[1], row[2]])
+                            .collect(),
                     ));
                 }
-                PropertyValue::Vec3ArrayF64(
-                    arr_view
-                        .outer_iter()
-                        .map(|row| [row[0], row[1], row[2]])
-                        .collect(),
-                )
             }
-        });
+        }
+    }
+    if let Some(value) = parse_tensor_property_value(value)? {
+        return Ok(value);
     }
     Err(PyValueError::new_err(
-        "Unsupported property type. Supported: None, float, int, str, ndarray",
+        "Unsupported property type. Supported: None, float, int, str, and numeric ndarray with dtype float32, float64, int32, or int64",
     ))
 }

@@ -80,6 +80,10 @@ const TYPE_MAT3X3_F64: u8 = 10; // [[f64; 3]; 3]
 const TYPE_FLOAT32: u8 = 11; // f32 scalar
 const TYPE_MAT3X3_F32: u8 = 12; // [[f32; 3]; 3]
 const TYPE_NONE: u8 = 13; // explicit null property
+const TYPE_TENSOR_F32: u8 = 14; // [ndim:u8][dims:u32...][f32...]
+const TYPE_TENSOR_F64: u8 = 15; // [ndim:u8][dims:u32...][f64...]
+const TYPE_TENSOR_I32: u8 = 16; // [ndim:u8][dims:u32...][i32...]
+const TYPE_TENSOR_I64: u8 = 17; // [ndim:u8][dims:u32...][i64...]
 
 // Two redundant page-aligned header slots for crash safety.
 const HEADER_SLOT_SIZE: usize = 4096;
@@ -1368,7 +1372,7 @@ mod tests {
 
     #[test]
     fn test_soa_all_property_value_types() {
-        use crate::atom::PropertyValue;
+        use crate::atom::{PropertyValue, TensorData};
 
         let temp = NamedTempFile::new().unwrap();
         let path = temp.path().to_path_buf();
@@ -1376,24 +1380,35 @@ mod tests {
         let mut mol = molecule_from_atoms(vec![Atom::new(0.0, 0.0, 0.0, 1)]);
 
         // Test every PropertyValue variant in atom_properties
-        mol.atom_properties
-            .insert("f64arr".to_string(), PropertyValue::FloatArray(vec![1.5]));
         mol.atom_properties.insert(
-            "vec3f32".to_string(),
+            "atom_f64arr".to_string(),
+            PropertyValue::FloatArray(vec![1.5]),
+        );
+        mol.atom_properties.insert(
+            "atom_vec3f32".to_string(),
             PropertyValue::Vec3Array(vec![[1.0, 2.0, 3.0]]),
         );
         mol.atom_properties
-            .insert("i64arr".to_string(), PropertyValue::IntArray(vec![42]));
+            .insert("atom_i64arr".to_string(), PropertyValue::IntArray(vec![42]));
         mol.atom_properties.insert(
-            "f32arr".to_string(),
+            "atom_f32arr".to_string(),
             PropertyValue::Float32Array(vec![3.125]),
         );
         mol.atom_properties.insert(
-            "vec3f64".to_string(),
+            "atom_vec3f64".to_string(),
             PropertyValue::Vec3ArrayF64(vec![[1.0, 2.0, 3.0]]),
         );
-        mol.atom_properties
-            .insert("i32arr".to_string(), PropertyValue::Int32Array(vec![-7]));
+        mol.atom_properties.insert(
+            "atom_i32arr".to_string(),
+            PropertyValue::Int32Array(vec![-7]),
+        );
+        mol.atom_properties.insert(
+            "atom_tensor".to_string(),
+            PropertyValue::Tensor(TensorData::F32 {
+                shape: vec![1, 2],
+                values: vec![0.25, 0.75],
+            }),
+        );
 
         // Test every PropertyValue variant in properties
         mol.properties
@@ -1428,6 +1443,13 @@ mod tests {
         );
         mol.properties
             .insert("none_val".to_string(), PropertyValue::None);
+        mol.properties.insert(
+            "tensor_val".to_string(),
+            PropertyValue::Tensor(TensorData::I64 {
+                shape: vec![2, 2],
+                values: vec![1, 2, 3, 4],
+            }),
+        );
 
         {
             let mut db = AtomDatabase::create(&path, CompressionType::Lz4).unwrap();
@@ -1439,34 +1461,41 @@ mod tests {
         let r = db.get_molecule(0).unwrap();
 
         // Verify atom_properties
-        assert_eq!(r.atom_properties.len(), 6);
-        match r.atom_properties.get("f64arr").unwrap() {
+        assert_eq!(r.atom_properties.len(), 7);
+        match r.atom_properties.get("atom_f64arr").unwrap() {
             PropertyValue::FloatArray(v) => assert_eq!(v, &[1.5]),
             other => panic!("expected FloatArray, got {:?}", other),
         }
-        match r.atom_properties.get("vec3f32").unwrap() {
+        match r.atom_properties.get("atom_vec3f32").unwrap() {
             PropertyValue::Vec3Array(v) => assert_eq!(v, &[[1.0, 2.0, 3.0]]),
             other => panic!("expected Vec3Array, got {:?}", other),
         }
-        match r.atom_properties.get("i64arr").unwrap() {
+        match r.atom_properties.get("atom_i64arr").unwrap() {
             PropertyValue::IntArray(v) => assert_eq!(v, &[42]),
             other => panic!("expected IntArray, got {:?}", other),
         }
-        match r.atom_properties.get("f32arr").unwrap() {
+        match r.atom_properties.get("atom_f32arr").unwrap() {
             PropertyValue::Float32Array(v) => assert_eq!(v, &[3.125f32]),
             other => panic!("expected Float32Array, got {:?}", other),
         }
-        match r.atom_properties.get("vec3f64").unwrap() {
+        match r.atom_properties.get("atom_vec3f64").unwrap() {
             PropertyValue::Vec3ArrayF64(v) => assert_eq!(v, &[[1.0, 2.0, 3.0]]),
             other => panic!("expected Vec3ArrayF64, got {:?}", other),
         }
-        match r.atom_properties.get("i32arr").unwrap() {
+        match r.atom_properties.get("atom_i32arr").unwrap() {
             PropertyValue::Int32Array(v) => assert_eq!(v, &[-7]),
             other => panic!("expected Int32Array, got {:?}", other),
         }
+        match r.atom_properties.get("atom_tensor").unwrap() {
+            PropertyValue::Tensor(TensorData::F32 { shape, values }) => {
+                assert_eq!(shape, &[1, 2]);
+                assert_eq!(values, &[0.25, 0.75]);
+            }
+            other => panic!("expected TensorData::F32, got {:?}", other),
+        }
 
         // Verify properties
-        assert_eq!(r.properties.len(), 10);
+        assert_eq!(r.properties.len(), 11);
         match r.properties.get("scalar_f").unwrap() {
             PropertyValue::Float(v) => assert_eq!(*v, 99.9),
             other => panic!("expected Float, got {:?}", other),
@@ -1482,6 +1511,13 @@ mod tests {
         match r.properties.get("none_val").unwrap() {
             PropertyValue::None => {}
             other => panic!("expected None, got {:?}", other),
+        }
+        match r.properties.get("tensor_val").unwrap() {
+            PropertyValue::Tensor(TensorData::I64 { shape, values }) => {
+                assert_eq!(shape, &[2, 2]);
+                assert_eq!(values, &[1, 2, 3, 4]);
+            }
+            other => panic!("expected TensorData::I64, got {:?}", other),
         }
     }
 

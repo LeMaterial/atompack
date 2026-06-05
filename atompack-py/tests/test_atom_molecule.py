@@ -169,6 +169,8 @@ def test_molecule_custom_properties() -> None:
     mol.set_property("int_vec32", np.array([3, 4], dtype=np.int32))
     mol.set_property("vec3", np.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]], dtype=np.float32))
     mol.set_property("vec3_f64", np.array([[1.1, 1.2, 1.3], [2.1, 2.2, 2.3]], dtype=np.float64))
+    mol.set_property("tensor_f32", np.arange(24, dtype=np.float32).reshape(2, 3, 4))
+    mol.set_property("tensor_i64", np.arange(6, dtype=np.int64).reshape(2, 3))
     mol.set_property("optional_label", None)
     mol.stress = np.eye(3, dtype=np.float64) * 3.0
 
@@ -209,6 +211,17 @@ def test_molecule_custom_properties() -> None:
     np.testing.assert_allclose(
         vec3_f64, np.array([[1.1, 1.2, 1.3], [2.1, 2.2, 2.3]], dtype=np.float64)
     )
+
+    tensor_f32 = mol.get_property("tensor_f32")
+    assert tensor_f32.dtype == np.float32
+    assert tensor_f32.shape == (2, 3, 4)
+    np.testing.assert_allclose(tensor_f32, np.arange(24, dtype=np.float32).reshape(2, 3, 4))
+
+    tensor_i64 = mol.get_property("tensor_i64")
+    assert tensor_i64.dtype == np.int64
+    assert tensor_i64.shape == (2, 3)
+    np.testing.assert_array_equal(tensor_i64, np.arange(6, dtype=np.int64).reshape(2, 3))
+
     assert mol.get_property("optional_label") is None
 
     np.testing.assert_allclose(mol.stress, np.eye(3, dtype=np.float64) * 3.0)
@@ -226,6 +239,8 @@ def test_molecule_custom_properties() -> None:
         "int_vec32",
         "vec3",
         "vec3_f64",
+        "tensor_f32",
+        "tensor_i64",
         "optional_label",
     }
 
@@ -234,6 +249,47 @@ def test_molecule_custom_properties() -> None:
 
     with pytest.raises(KeyError, match=r"not found"):
         mol.get_property("does_not_exist")
+
+
+def test_molecule_atom_property_scope_and_delete() -> None:
+    mol = _make_molecule()
+
+    mol.set_property("partial_charge", np.array([0.1, 0.2], dtype=np.float32), scope="atom")
+    mol.set_property("descriptor", np.arange(8, dtype=np.float64).reshape(2, 2, 2), scope="atom")
+
+    partial_charge = mol.get_property("partial_charge")
+    assert partial_charge.dtype == np.float32
+    np.testing.assert_allclose(partial_charge, np.array([0.1, 0.2], dtype=np.float32))
+
+    descriptor = mol["descriptor"]
+    assert descriptor.dtype == np.float64
+    assert descriptor.shape == (2, 2, 2)
+
+    assert mol.has_property("partial_charge") is True
+    assert mol.has_property("partial_charge", scope="atom") is True
+    assert mol.has_property("partial_charge", scope="molecule") is False
+    assert "partial_charge" in mol.property_keys()
+    assert "partial_charge" in mol.property_keys(scope="atom")
+    assert "partial_charge" not in mol.property_keys(scope="molecule")
+
+    # Existing atom properties keep atom scope when overwritten without scope.
+    mol.set_property("partial_charge", np.array([0.3, 0.4], dtype=np.float32))
+    np.testing.assert_allclose(
+        mol.get_property("partial_charge"),
+        np.array([0.3, 0.4], dtype=np.float32),
+    )
+
+    with pytest.raises(ValueError, match=r"first dimension"):
+        mol.set_property("bad_atom", np.array([1.0], dtype=np.float64), scope="atom")
+
+    mol.set_property("label", "train")
+    with pytest.raises(ValueError, match=r"already exists as a molecule property"):
+        mol.set_property("label", np.array([1.0, 2.0], dtype=np.float64), scope="atom")
+
+    mol.delete_property("label")
+    assert mol.has_property("label") is False
+    with pytest.raises(KeyError, match=r"not found"):
+        mol.delete_property("label")
 
 
 def test_missing_property_raises_keyerror_consistently() -> None:
