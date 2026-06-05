@@ -160,9 +160,11 @@ impl PyAtomDatabase {
                 )
                 .map_err(|e| PyValueError::new_err(format!("{}", e)));
         }
-        let owned = molecule.clone_as_owned()?;
+        let owned = molecule.as_owned().ok_or_else(|| {
+            PyValueError::new_err("Molecule is missing both owned and view state")
+        })?;
         self.inner
-            .add_molecule(&owned)
+            .add_molecule(owned)
             .map_err(|e| PyValueError::new_err(format!("{}", e)))
     }
 
@@ -170,14 +172,18 @@ impl PyAtomDatabase {
     fn add_molecules(&mut self, molecules: Vec<PyRef<PyMolecule>>) -> PyResult<()> {
         let mut raw_records: Vec<(&[u8], u32)> = Vec::new();
         let mut raw_views: Vec<&SoaMoleculeView> = Vec::new();
-        let mut owned_molecules: Vec<Molecule> = Vec::new();
+        let mut owned_molecules: Vec<&Molecule> = Vec::new();
 
         for m in &molecules {
             if let Some(view) = m.as_view() {
                 raw_records.push((view.raw_bytes(), view.n_atoms as u32));
                 raw_views.push(view);
+            } else if let Some(owned) = m.as_owned() {
+                owned_molecules.push(owned);
             } else {
-                owned_molecules.push(m.clone_as_owned()?);
+                return Err(PyValueError::new_err(
+                    "Molecule is missing both owned and view state",
+                ));
             }
         }
 
@@ -211,9 +217,8 @@ impl PyAtomDatabase {
             }
         }
         if !owned_molecules.is_empty() {
-            let mol_refs: Vec<&Molecule> = owned_molecules.iter().collect();
             self.inner
-                .add_molecules(&mol_refs)
+                .add_molecules(&owned_molecules)
                 .map_err(|e| PyValueError::new_err(format!("{}", e)))?;
         }
         Ok(())
