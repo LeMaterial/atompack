@@ -1,7 +1,8 @@
 use super::dtypes::{
     arr, float_array_data_type_tag, float_array_payload_len, float_scalar_data_type_tag,
-    float_scalar_payload_len, mat3_data_type_tag, mat3_payload_len, positions_type_from_molecule,
-    property_value_payload_len, property_value_type_tag,
+    float_scalar_payload_len, is_tensor_type_tag, mat3_data_type_tag, mat3_payload_len,
+    positions_type_from_molecule, property_value_payload_len, property_value_type_tag,
+    tensor_shape_from_payload, tensor_type_tag_elem_bytes,
     validate_builtin_type_tag_for_record_format, vec3_data_type_tag, vec3_payload_len,
 };
 use super::soa::{SoaLayout, resolve_layout};
@@ -139,6 +140,8 @@ fn schema_type_tag_elem_bytes(tag: u8) -> Result<usize> {
         TYPE_MAT3X3_F64 => Ok(72),
         TYPE_FLOAT32 => Ok(4),
         TYPE_MAT3X3_F32 => Ok(36),
+        TYPE_TENSOR_F32 | TYPE_TENSOR_I32 => Ok(4),
+        TYPE_TENSOR_F64 | TYPE_TENSOR_I64 => Ok(8),
         _ => Err(Error::InvalidData(format!(
             "Unsupported section type tag {}",
             tag
@@ -160,11 +163,13 @@ fn schema_entry(
     key: &str,
     type_tag: u8,
     payload_len: usize,
+    tensor_payload: Option<&[u8]>,
     n_atoms: usize,
 ) -> Result<SchemaEntry> {
     let per_atom = schema_is_per_atom(kind, key);
     let elem_bytes = schema_type_tag_elem_bytes(type_tag)?;
-    let slot_bytes = if matches!(type_tag, TYPE_STRING | TYPE_NONE) {
+    let slot_bytes = if matches!(type_tag, TYPE_STRING | TYPE_NONE) || is_tensor_type_tag(type_tag)
+    {
         0
     } else if per_atom {
         match type_tag {
@@ -178,7 +183,38 @@ fn schema_entry(
         payload_len
     };
 
-    if per_atom {
+    if per_atom && is_tensor_type_tag(type_tag) {
+        let payload = tensor_payload.ok_or_else(|| {
+            Error::InvalidData(format!("Tensor section '{}' is missing payload", key))
+        })?;
+        let (shape, _) = tensor_shape_from_payload(type_tag, payload)?;
+        match shape.first() {
+            Some(first_dim) if *first_dim == n_atoms => {}
+            Some(first_dim) => {
+                return Err(Error::InvalidData(format!(
+                    "Atom tensor property '{}' first dimension ({}) doesn't match atom count ({})",
+                    key, first_dim, n_atoms
+                )));
+            }
+            None => {
+                return Err(Error::InvalidData(format!(
+                    "Atom tensor property '{}' must have at least one dimension",
+                    key
+                )));
+            }
+        }
+        if tensor_type_tag_elem_bytes(type_tag) != Some(elem_bytes) {
+            return Err(Error::InvalidData(format!(
+                "Tensor section '{}' has inconsistent element size",
+                key
+            )));
+        }
+    } else if is_tensor_type_tag(type_tag) {
+        let payload = tensor_payload.ok_or_else(|| {
+            Error::InvalidData(format!("Tensor section '{}' is missing payload", key))
+        })?;
+        let _ = tensor_shape_from_payload(type_tag, payload)?;
+    } else if per_atom {
         let expected = elem_bytes
             .checked_mul(n_atoms)
             .ok_or_else(|| Error::InvalidData(format!("Schema overflow for section '{}'", key)))?;
@@ -211,6 +247,20 @@ pub(super) fn validate_schema_lock_for_record_format(
     Ok(())
 }
 
+fn insert_schema_entry(
+    schema: &mut SchemaLock,
+    kind: u8,
+    key: &str,
+    type_tag: u8,
+    payload_len: usize,
+    tensor_payload: Option<&[u8]>,
+    n_atoms: usize,
+) -> Result<()> {
+    let entry = schema_entry(kind, key, type_tag, payload_len, tensor_payload, n_atoms)?;
+    schema.sections.insert((kind, key.to_string()), entry);
+    Ok(())
+}
+
 pub(super) fn schema_from_molecule(molecule: &Molecule) -> Result<SchemaLock> {
     let n_atoms = molecule.len();
     let mut schema = SchemaLock {
@@ -218,82 +268,153 @@ pub(super) fn schema_from_molecule(molecule: &Molecule) -> Result<SchemaLock> {
         sections: BTreeMap::new(),
     };
 
-    let mut insert = |kind: u8, key: &str, type_tag: u8, payload_len: usize| -> Result<()> {
-        let entry = schema_entry(kind, key, type_tag, payload_len, n_atoms)?;
-        schema.sections.insert((kind, key.to_string()), entry);
-        Ok(())
-    };
+    for key in molecule.atom_properties.keys() {
+        if molecule.properties.contains_key(key) {
+            return Err(Error::InvalidData(format!(
+                "Custom property '{}' exists in both atom and molecule scopes",
+                key
+            )));
+        }
+    }
 
     if let Some(charges) = &molecule.charges {
-        insert(
+        insert_schema_entry(
+            &mut schema,
             KIND_BUILTIN,
             "charges",
             float_array_data_type_tag(charges),
             float_array_payload_len(charges),
+            None,
+            n_atoms,
         )?;
     }
     if let Some(cell) = &molecule.cell {
-        insert(
+        insert_schema_entry(
+            &mut schema,
             KIND_BUILTIN,
             "cell",
             mat3_data_type_tag(cell),
             mat3_payload_len(cell),
+            None,
+            n_atoms,
         )?;
     }
     if let Some(energy) = &molecule.energy {
-        insert(
+        insert_schema_entry(
+            &mut schema,
             KIND_BUILTIN,
             "energy",
             float_scalar_data_type_tag(energy),
             float_scalar_payload_len(energy),
+            None,
+            n_atoms,
         )?;
     }
     if let Some(forces) = &molecule.forces {
-        insert(
+        insert_schema_entry(
+            &mut schema,
             KIND_BUILTIN,
             "forces",
             vec3_data_type_tag(forces),
             vec3_payload_len(forces),
+            None,
+            n_atoms,
         )?;
     }
     if let Some(name) = &molecule.name {
-        insert(KIND_BUILTIN, "name", TYPE_STRING, name.len())?;
+        insert_schema_entry(
+            &mut schema,
+            KIND_BUILTIN,
+            "name",
+            TYPE_STRING,
+            name.len(),
+            None,
+            n_atoms,
+        )?;
     }
     if molecule.pbc.is_some() {
-        insert(KIND_BUILTIN, "pbc", TYPE_BOOL3, 3)?;
+        insert_schema_entry(
+            &mut schema,
+            KIND_BUILTIN,
+            "pbc",
+            TYPE_BOOL3,
+            3,
+            None,
+            n_atoms,
+        )?;
     }
     if let Some(stress) = &molecule.stress {
-        insert(
+        insert_schema_entry(
+            &mut schema,
             KIND_BUILTIN,
             "stress",
             mat3_data_type_tag(stress),
             mat3_payload_len(stress),
+            None,
+            n_atoms,
         )?;
     }
     if let Some(velocities) = &molecule.velocities {
-        insert(
+        insert_schema_entry(
+            &mut schema,
             KIND_BUILTIN,
             "velocities",
             vec3_data_type_tag(velocities),
             vec3_payload_len(velocities),
+            None,
+            n_atoms,
         )?;
     }
 
     for (key, value) in &molecule.atom_properties {
-        insert(
-            KIND_ATOM_PROP,
-            key,
-            property_value_type_tag(value),
-            property_value_payload_len(value),
-        )?;
+        let type_tag = property_value_type_tag(value);
+        if is_tensor_type_tag(type_tag) {
+            let payload = super::dtypes::property_value_to_bytes(value);
+            insert_schema_entry(
+                &mut schema,
+                KIND_ATOM_PROP,
+                key,
+                type_tag,
+                payload.len(),
+                Some(&payload),
+                n_atoms,
+            )?;
+        } else {
+            insert_schema_entry(
+                &mut schema,
+                KIND_ATOM_PROP,
+                key,
+                type_tag,
+                property_value_payload_len(value),
+                None,
+                n_atoms,
+            )?;
+        }
     }
     for (key, value) in &molecule.properties {
-        insert(
-            KIND_MOL_PROP,
-            key,
-            property_value_type_tag(value),
-            property_value_payload_len(value),
-        )?;
+        let type_tag = property_value_type_tag(value);
+        if is_tensor_type_tag(type_tag) {
+            let payload = super::dtypes::property_value_to_bytes(value);
+            insert_schema_entry(
+                &mut schema,
+                KIND_MOL_PROP,
+                key,
+                type_tag,
+                payload.len(),
+                Some(&payload),
+                n_atoms,
+            )?;
+        } else {
+            insert_schema_entry(
+                &mut schema,
+                KIND_MOL_PROP,
+                key,
+                type_tag,
+                property_value_payload_len(value),
+                None,
+                n_atoms,
+            )?;
+        }
     }
 
     Ok(schema)
@@ -374,11 +495,13 @@ fn parse_record_schema_with_layout(
         if payload_end > bytes.len() {
             return Err(Error::InvalidData("SOA section payload truncated".into()));
         }
+        let payload = &bytes[pos..payload_end];
         pos = payload_end;
         if kind == KIND_BUILTIN {
             validate_builtin_type_tag_for_record_format(record_format, &key, type_tag)?;
         }
-        let entry = schema_entry(kind, &key, type_tag, payload_len, n_atoms)?;
+        let tensor_payload = is_tensor_type_tag(type_tag).then_some(payload);
+        let entry = schema_entry(kind, &key, type_tag, payload_len, tensor_payload, n_atoms)?;
         schema.sections.insert((kind, key), entry);
     }
 

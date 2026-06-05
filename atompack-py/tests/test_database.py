@@ -64,6 +64,7 @@ def test_database_rejects_invalid_compression(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match=r"Invalid compression"):
         atompack.Database(str(tmp_path / "bad.atp"), compression="definitely-not-a-codec")
 
+
 def test_database_add_arrays_batch_rejects_v2_incompatible_builtin_dtype(tmp_path: Path) -> None:
     path = tmp_path / "batch_arrays_v2_compat.atp"
     db = atompack.Database(str(path))
@@ -134,6 +135,7 @@ def test_database_roundtrip_from_arrays_with_builtins(tmp_path: Path) -> None:
     np.testing.assert_allclose(read.forces, forces)
     np.testing.assert_allclose(read.cell, cell)
 
+
 def test_database_add_molecules_roundtrip_from_arrays_with_builtins(tmp_path: Path) -> None:
     path = tmp_path / "from_arrays_add_molecules.atp"
     positions = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32)
@@ -172,7 +174,9 @@ def test_database_add_molecules_roundtrip_from_arrays_with_builtins(tmp_path: Pa
     np.testing.assert_allclose(first.cell, cell)
 
     assert second.energy == pytest.approx(-8.5)
-    np.testing.assert_allclose(second.positions, positions + np.array([[0.5, 0.0, 0.0], [0.5, 0.0, 0.0]], dtype=np.float32))
+    np.testing.assert_allclose(
+        second.positions, positions + np.array([[0.5, 0.0, 0.0], [0.5, 0.0, 0.0]], dtype=np.float32)
+    )
     np.testing.assert_array_equal(second.atomic_numbers, atomic_numbers)
     np.testing.assert_allclose(second.forces, forces * 2.0)
     np.testing.assert_allclose(second.cell, cell * 2.0)
@@ -496,6 +500,51 @@ def test_database_custom_array_properties_roundtrip_all_numeric_tags(
 
 @pytest.mark.parametrize("mmap", [False, True])
 @pytest.mark.parametrize("compression", ["none", "lz4", "zstd"])
+def test_database_tensor_properties_allow_value_level_shapes(
+    tmp_path: Path,
+    mmap: bool,
+    compression: str,
+) -> None:
+    path = tmp_path / f"tensor_value_shapes_{compression}_{mmap}.atp"
+    mol1 = _make_molecule(-6.0)
+    mol1.set_property("density", np.arange(24, dtype=np.float32).reshape(2, 3, 4))
+    mol1.set_property(
+        "atom_descriptor", np.arange(8, dtype=np.float32).reshape(2, 2, 2), scope="atom"
+    )
+
+    mol2 = _make_molecule(-7.0)
+    mol2.set_property("density", np.arange(5, dtype=np.float32).reshape(1, 5))
+    mol2.set_property("atom_descriptor", np.arange(8, dtype=np.float32).reshape(2, 4), scope="atom")
+
+    db = atompack.Database(str(path), compression=compression)
+    db.add_molecules([mol1, mol2])
+    db.flush()
+
+    reopened = atompack.Database.open(str(path), mmap=mmap)
+    first = reopened[0]
+    second = reopened[1]
+
+    first_density = first.get_property("density")
+    assert first_density.dtype == np.float32
+    assert first_density.shape == (2, 3, 4)
+    np.testing.assert_allclose(first_density, np.arange(24, dtype=np.float32).reshape(2, 3, 4))
+
+    second_density = second.get_property("density")
+    assert second_density.dtype == np.float32
+    assert second_density.shape == (1, 5)
+    np.testing.assert_allclose(second_density, np.arange(5, dtype=np.float32).reshape(1, 5))
+
+    first_descriptor = first.get_property("atom_descriptor")
+    assert first_descriptor.shape == (2, 2, 2)
+    np.testing.assert_allclose(first_descriptor, np.arange(8, dtype=np.float32).reshape(2, 2, 2))
+
+    second_descriptor = second.get_property("atom_descriptor")
+    assert second_descriptor.shape == (2, 4)
+    np.testing.assert_allclose(second_descriptor, np.arange(8, dtype=np.float32).reshape(2, 4))
+
+
+@pytest.mark.parametrize("mmap", [False, True])
+@pytest.mark.parametrize("compression", ["none", "lz4", "zstd"])
 def test_database_single_item_mutation_is_copy_on_write(
     tmp_path: Path,
     mmap: bool,
@@ -630,7 +679,6 @@ def test_database_open_defaults_to_read_only_mmap(tmp_path: Path) -> None:
 
     check = atompack.Database.open(str(path))
     assert len(check) == 2
-
 
 
 def test_database_sequence_iteration_stops_cleanly(tmp_path: Path) -> None:

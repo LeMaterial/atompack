@@ -9,9 +9,11 @@
 
 use atompack::{
     Atom, AtomDatabase, FloatArrayData, FloatScalarData, Mat3Data, Molecule, SharedMmapBytes,
-    Vec3Data, atom::PropertyValue, compression::CompressionType,
+    Vec3Data,
+    atom::{PropertyValue, TensorData},
+    compression::CompressionType,
 };
-use numpy::{Element, PyArray1, PyArray2, PyArray3, PyArrayMethods};
+use numpy::{Element, PyArray1, PyArray2, PyArray3, PyArrayDyn, PyArrayMethods};
 use pyo3::exceptions::{PyFileExistsError, PyIndexError, PyKeyError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyTuple};
@@ -114,6 +116,10 @@ const TYPE_MAT3X3_F64: u8 = 10;
 const TYPE_FLOAT32: u8 = 11;
 const TYPE_MAT3X3_F32: u8 = 12;
 const TYPE_NONE: u8 = 13;
+const TYPE_TENSOR_F32: u8 = 14;
+const TYPE_TENSOR_F64: u8 = 15;
+const TYPE_TENSOR_I32: u8 = 16;
+const TYPE_TENSOR_I64: u8 = 17;
 
 const RECORD_FORMAT_SOA_V2: u32 = 2;
 const RECORD_FORMAT_SOA_V3: u32 = 3;
@@ -126,8 +132,9 @@ pub(crate) use self::py_dtypes::{
     parse_mat3_field, parse_positions_field, parse_property_value, parse_vec3_field,
 };
 pub(crate) use self::soa::{
-    LazySection, SectionSchema, SoaContext, SoaMoleculeView, parse_mol_fast_soa, read_f64_scalar,
-    read_i64_scalar, section_schema_from_ref, type_tag_elem_bytes,
+    LazySection, SectionSchema, SoaContext, SoaMoleculeView, decode_property_value,
+    is_tensor_type_tag, parse_mol_fast_soa, read_f64_scalar, read_i64_scalar,
+    section_schema_from_ref, type_tag_elem_bytes,
 };
 
 mod database;

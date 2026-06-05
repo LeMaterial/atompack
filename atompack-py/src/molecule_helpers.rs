@@ -392,6 +392,22 @@ pub(super) fn property_value_to_pyobject(
         }
         PropertyValue::IntArray(v) => into_py_any(py, PyArray1::from_slice(py, v))?,
         PropertyValue::Int32Array(v) => into_py_any(py, PyArray1::from_slice(py, v))?,
+        PropertyValue::Tensor(TensorData::F32 { shape, values }) => into_py_any(
+            py,
+            PyArray1::from_vec(py, values.clone()).reshape(shape.as_slice())?,
+        )?,
+        PropertyValue::Tensor(TensorData::F64 { shape, values }) => into_py_any(
+            py,
+            PyArray1::from_vec(py, values.clone()).reshape(shape.as_slice())?,
+        )?,
+        PropertyValue::Tensor(TensorData::I32 { shape, values }) => into_py_any(
+            py,
+            PyArray1::from_vec(py, values.clone()).reshape(shape.as_slice())?,
+        )?,
+        PropertyValue::Tensor(TensorData::I64 { shape, values }) => into_py_any(
+            py,
+            PyArray1::from_vec(py, values.clone()).reshape(shape.as_slice())?,
+        )?,
     })
 }
 
@@ -444,6 +460,10 @@ pub(super) fn property_section_to_pyobject<'py>(
             )?
         }
         TYPE_I32_ARRAY => into_py_any(py, pyarray1_from_cow(py, cast_or_decode_i32(payload)?))?,
+        tag if is_tensor_type_tag(tag) => {
+            let value = decode_property_value(tag, payload)?;
+            property_value_to_pyobject(py, &value)?
+        }
         _ => {
             return Err(PyValueError::new_err(format!(
                 "Unsupported property type tag {}",
@@ -462,6 +482,7 @@ fn property_value_is_atom_array(value: &PropertyValue, n_atoms: usize) -> bool {
         PropertyValue::Float32Array(values) => values.len() == n_atoms,
         PropertyValue::Vec3ArrayF64(values) => values.len() == n_atoms,
         PropertyValue::Int32Array(values) => values.len() == n_atoms,
+        PropertyValue::Tensor(_) => false,
         PropertyValue::Float(_) | PropertyValue::Int(_) | PropertyValue::String(_) => false,
     }
 }
