@@ -87,11 +87,11 @@ def test_from_ase_extracts_core_fields() -> None:
             "int_vec32": np.array([3, 4], dtype=np.int32),
             "vec3": np.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]], dtype=np.float32),
             "vec3_f64": np.array([[1.0, 1.1, 1.2], [2.0, 2.1, 2.2]], dtype=np.float64),
+            "density_grid": np.arange(24, dtype=np.float32).reshape(2, 3, 4),
             "nullable": None,
             "stress": np.array(
                 [[1.1, 1.2, 1.3], [2.1, 2.2, 2.3], [3.1, 3.2, 3.3]], dtype=np.float64
             ),
-            "unsupported": {"nested": True},
         },
     )
 
@@ -127,6 +127,13 @@ def test_from_ase_extracts_core_fields() -> None:
     np.testing.assert_allclose(
         mol.get_property("vec3_f64"), np.array([[1.0, 1.1, 1.2], [2.0, 2.1, 2.2]], dtype=np.float64)
     )
+    density_grid = mol.get_property("density_grid")
+    assert density_grid.dtype == np.float32
+    assert density_grid.shape == (2, 3, 4)
+    np.testing.assert_allclose(
+        density_grid,
+        np.arange(24, dtype=np.float32).reshape(2, 3, 4),
+    )
     assert mol.get_property("nullable") is None
     np.testing.assert_allclose(
         mol.stress,
@@ -134,8 +141,6 @@ def test_from_ase_extracts_core_fields() -> None:
     )
     with pytest.raises(KeyError, match=r"not found"):
         mol.get_property("stress")
-
-    assert mol.has_property("unsupported") is False
 
 
 def test_from_ase_info_override_and_copy_toggle() -> None:
@@ -151,6 +156,93 @@ def test_from_ase_info_override_and_copy_toggle() -> None:
 
     mol_override = atompack.from_ase(atoms, info={"temperature": 500.0})
     assert mol_override.get_property("temperature") == pytest.approx(500.0)
+
+
+def test_from_ase_copies_tensor_custom_properties_from_info_and_calc_results() -> None:
+    info_tensor = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+    calc_tensor = np.arange(12, dtype=np.int64).reshape(1, 3, 4)
+    atoms = FakeASEAtoms(
+        positions=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float64),
+        atomic_numbers=np.array([6, 8], dtype=np.int64),
+        pbc=np.array([False, False, False]),
+        info={"density_grid": info_tensor},
+        calc=FakeCalc({"band_tensor": calc_tensor}),
+    )
+
+    mol = atompack.from_ase(atoms)
+
+    density_grid = mol.get_property("density_grid")
+    assert density_grid.dtype == np.float32
+    assert density_grid.shape == (2, 3, 4)
+    np.testing.assert_allclose(density_grid, info_tensor)
+
+    band_tensor = mol.get_property("band_tensor")
+    assert band_tensor.dtype == np.int64
+    assert band_tensor.shape == (1, 3, 4)
+    np.testing.assert_array_equal(band_tensor, calc_tensor)
+
+
+def test_from_ase_custom_arrays_remain_molecule_properties() -> None:
+    descriptor = np.arange(8, dtype=np.float32).reshape(2, 2, 2)
+    atoms = FakeASEAtoms(
+        positions=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float64),
+        atomic_numbers=np.array([6, 8], dtype=np.int64),
+        pbc=np.array([False, False, False]),
+        arrays={"descriptor": descriptor},
+    )
+
+    mol = atompack.from_ase(atoms)
+
+    restored = mol.get_property("descriptor")
+    assert restored.dtype == np.float32
+    assert restored.shape == (2, 2, 2)
+    np.testing.assert_allclose(restored, descriptor)
+    assert mol.has_property("descriptor", scope="molecule") is True
+    assert mol.has_property("descriptor", scope="atom") is False
+
+
+def test_from_ase_rejects_unsupported_enabled_custom_values_and_honors_optouts() -> None:
+    atoms_with_bad_info = FakeASEAtoms(
+        positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float64),
+        atomic_numbers=np.array([1], dtype=np.int64),
+        pbc=np.array([False, False, False]),
+        info={"bad_info": {"nested": True}},
+    )
+    with pytest.raises(
+        TypeError,
+        match=r"Unsupported ASE custom property 'bad_info' from atoms\.info",
+    ):
+        atompack.from_ase(atoms_with_bad_info)
+
+    mol = atompack.from_ase(atoms_with_bad_info, copy_info=False)
+    assert mol.has_property("bad_info") is False
+
+    atoms_with_bad_array = FakeASEAtoms(
+        positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float64),
+        atomic_numbers=np.array([1], dtype=np.int64),
+        pbc=np.array([False, False, False]),
+        arrays={"bad_array": np.array([object()], dtype=object)},
+    )
+    with pytest.raises(
+        TypeError,
+        match=r"Unsupported ASE custom property 'bad_array' from atoms\.arrays",
+    ):
+        atompack.from_ase(atoms_with_bad_array)
+
+    mol = atompack.from_ase(atoms_with_bad_array, copy_arrays=False)
+    assert mol.has_property("bad_array") is False
+
+    atoms_with_bad_calc_result = FakeASEAtoms(
+        positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float64),
+        atomic_numbers=np.array([1], dtype=np.int64),
+        pbc=np.array([False, False, False]),
+        calc=FakeCalc({"bad_result": {"nested": True}}),
+    )
+    with pytest.raises(
+        TypeError,
+        match=r"Unsupported ASE custom property 'bad_result' from atoms\.calc\.results",
+    ):
+        atompack.from_ase(atoms_with_bad_calc_result)
 
 
 def test_from_ase_extracts_arrays_and_calc_results() -> None:
@@ -178,17 +270,13 @@ def test_from_ase_extracts_arrays_and_calc_results() -> None:
     mol = atompack.from_ase(atoms)
 
     np.testing.assert_array_equal(mol.get_property("tags"), np.array([1, 2], dtype=np.int32))
-    np.testing.assert_allclose(
-        mol.get_property("masses"), np.array([12.0, 16.0], dtype=np.float64)
-    )
+    np.testing.assert_allclose(mol.get_property("masses"), np.array([12.0, 16.0], dtype=np.float64))
     np.testing.assert_allclose(
         mol.get_property("momenta"),
         np.array([[0.1, 0.0, 0.0], [0.0, 0.2, 0.0]], dtype=np.float64),
     )
     assert mol.get_property("free_energy") == pytest.approx(-5.5)
-    np.testing.assert_allclose(
-        mol.get_property("magmoms"), np.array([0.3, 0.4], dtype=np.float64)
-    )
+    np.testing.assert_allclose(mol.get_property("magmoms"), np.array([0.3, 0.4], dtype=np.float64))
     np.testing.assert_allclose(mol.stress, np.eye(3, dtype=np.float64) * 3.0)
     with pytest.raises(KeyError, match=r"not found"):
         mol.get_property("forces")
@@ -360,6 +448,41 @@ def test_to_ase_owned_maps_builtins_and_properties() -> None:
     np.testing.assert_allclose(atoms.calc.results["stress"], mol.stress)
     assert atoms.info["temperature"] == pytest.approx(300.0)
     np.testing.assert_array_equal(atoms.arrays["tags"], np.array([3, 4], dtype=np.int32))
+
+
+@pytest.mark.parametrize("view_backed", [False, True])
+def test_to_ase_routes_tensor_properties_by_scope(tmp_path, view_backed: bool) -> None:
+    molecule_tensor = np.arange(8, dtype=np.float32).reshape(2, 2, 2)
+    atom_tensor = np.arange(8, dtype=np.float64).reshape(2, 2, 2)
+    mol = atompack.Molecule.from_arrays(
+        np.array([[0.0, 0.0, 0.0], [1.0, 0.5, 0.0]], dtype=np.float32),
+        np.array([6, 8], dtype=np.uint8),
+    )
+    mol.set_property("molecule_tensor", molecule_tensor)
+    mol.set_property("atom_tensor", atom_tensor, scope="atom")
+
+    if view_backed:
+        path = tmp_path / "to_ase_tensor_scope.atp"
+        db = atompack.Database(str(path), compression="none")
+        db.add_molecule(mol)
+        db.flush()
+        mol = atompack.Database.open(str(path))[0]
+
+    atoms = mol.to_ase()
+
+    assert "molecule_tensor" in atoms.info
+    assert "molecule_tensor" not in atoms.arrays
+    restored_molecule_tensor = atoms.info["molecule_tensor"]
+    assert restored_molecule_tensor.dtype == np.float32
+    assert restored_molecule_tensor.shape == (2, 2, 2)
+    np.testing.assert_allclose(restored_molecule_tensor, molecule_tensor)
+
+    assert "atom_tensor" in atoms.arrays
+    assert "atom_tensor" not in atoms.info
+    restored_atom_tensor = atoms.arrays["atom_tensor"]
+    assert restored_atom_tensor.dtype == np.float64
+    assert restored_atom_tensor.shape == (2, 2, 2)
+    np.testing.assert_allclose(restored_atom_tensor, atom_tensor)
 
 
 def test_to_ase_roundtrip_preserves_none_custom_property() -> None:
