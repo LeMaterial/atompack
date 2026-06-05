@@ -16,7 +16,7 @@ use atompack::{
 use numpy::{Element, PyArray1, PyArray2, PyArray3, PyArrayDyn, PyArrayMethods};
 use pyo3::exceptions::{PyFileExistsError, PyIndexError, PyKeyError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyTuple};
+use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
 use pyo3::{IntoPyObject, IntoPyObjectExt};
 use std::borrow::Cow;
 use std::path::PathBuf;
