@@ -1,6 +1,6 @@
 """Type stubs for atompack"""
 
-from typing import Any, Literal, Sequence, overload
+from typing import Any, Iterable, Literal, Sequence, overload
 
 import numpy as np
 import numpy.typing as npt
@@ -656,6 +656,7 @@ def from_ase(
     copy_info: bool = True,
     copy_arrays: bool = True,
     info: dict | None = None,
+    atom_keys: Iterable[str] | None = None,
 ) -> Molecule:
     """
     Convert an ASE Atoms object to an atompack Molecule.
@@ -691,6 +692,10 @@ def from_ase(
         Additional properties to store in the molecule. These will be added after
         copying atoms.info (if copy_info=True), so they can override atoms.info values.
         Supports the same types as copy_info.
+    atom_keys : iterable of str, optional
+        Custom property keys to store as atom-scope properties when found in
+        atoms.arrays, atoms.info, calculator results, or the explicit info override.
+        Unlisted keys remain molecule-scope properties.
 
     Returns
     -------
@@ -763,6 +768,7 @@ def add_ase_batch(
     copy_info: bool = True,
     copy_arrays: bool = True,
     info: dict | list[dict | None] | None = None,
+    atom_keys: Iterable[str] | None = None,
     batch_size: int = 512,
 ) -> None:
     """Write many ASE Atoms objects into an atompack database efficiently."""

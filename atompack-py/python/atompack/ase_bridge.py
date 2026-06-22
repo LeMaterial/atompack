@@ -106,7 +106,30 @@ def _coerce_custom_property(key, value, source):
     return coerced
 
 
-def _merge_properties(properties, builtins, values, source):
+def _normalize_atom_keys(atom_keys):
+    if atom_keys is None:
+        return frozenset()
+    if isinstance(atom_keys, str):
+        raise TypeError("atom_keys must be an iterable of custom property names, not a string")
+    try:
+        normalized = frozenset(atom_keys)
+    except TypeError as exc:
+        raise TypeError("atom_keys must be an iterable of custom property names") from exc
+    invalid = [key for key in normalized if not isinstance(key, str)]
+    if invalid:
+        raise TypeError("atom_keys must contain only strings")
+    return normalized
+
+
+def _store_custom_property(properties, atom_properties, atom_keys, key, value, source):
+    coerced = _coerce_custom_property(key, value, source)
+    if key in atom_keys:
+        atom_properties[key] = coerced
+    else:
+        properties[key] = coerced
+
+
+def _merge_properties(properties, atom_properties, builtins, atom_keys, values, source):
     for key, value in values.items():
         if key in _BUILTIN_FIELDS:
             # Builtin keys in atoms.info / info-override go to the builtins
@@ -119,7 +142,7 @@ def _merge_properties(properties, builtins, values, source):
                 if arr.shape == (3, 3) and arr.dtype.kind == "f":
                     builtins["stress"] = arr.astype(np.float64, copy=False)
             continue
-        properties[key] = _coerce_custom_property(key, value, source)
+        _store_custom_property(properties, atom_properties, atom_keys, key, value, source)
 
 
 def _extract_ase_record(
@@ -134,7 +157,9 @@ def _extract_ase_record(
     copy_info=True,
     copy_arrays=True,
     info=None,
+    atom_keys=None,
 ):
+    atom_keys = _normalize_atom_keys(atom_keys)
     positions = np.asarray(atoms.get_positions(), dtype=np.float32)
     atomic_numbers = np.asarray(atoms.get_atomic_numbers(), dtype=np.uint8)
     n_atoms = len(atomic_numbers)
@@ -202,6 +227,7 @@ def _extract_ase_record(
         builtins["stress"] = _get_stress(atoms)
 
     properties = {}
+    atom_properties = {}
 
     arrays = getattr(atoms, "arrays", None)
     if copy_arrays and isinstance(arrays, dict):
@@ -212,19 +238,47 @@ def _extract_ase_record(
             # builtins["forces"] (from get_forces()) and properties["forces"].
             if key in _ASE_RESERVED_ARRAYS or key in _BUILTIN_FIELDS:
                 continue
-            properties[key] = _coerce_custom_property(key, value, "atoms.arrays")
+            _store_custom_property(
+                properties,
+                atom_properties,
+                atom_keys,
+                key,
+                value,
+                "atoms.arrays",
+            )
 
     calc = getattr(atoms, "calc", None)
     results = getattr(calc, "results", None)
     if isinstance(results, dict):
         for key, value in results.items():
             if key not in _BUILTIN_FIELDS:
-                properties[key] = _coerce_custom_property(key, value, "atoms.calc.results")
+                _store_custom_property(
+                    properties,
+                    atom_properties,
+                    atom_keys,
+                    key,
+                    value,
+                    "atoms.calc.results",
+                )
 
     if copy_info and getattr(atoms, "info", None):
-        _merge_properties(properties, builtins, atoms.info, "atoms.info")
+        _merge_properties(
+            properties,
+            atom_properties,
+            builtins,
+            atom_keys,
+            atoms.info,
+            "atoms.info",
+        )
     if info is not None:
-        _merge_properties(properties, builtins, info, "info override")
+        _merge_properties(
+            properties,
+            atom_properties,
+            builtins,
+            atom_keys,
+            info,
+            "info override",
+        )
 
     return {
         "positions": positions,
@@ -232,6 +286,7 @@ def _extract_ase_record(
         "n_atoms": n_atoms,
         "builtins": builtins,
         "properties": properties,
+        "atom_properties": atom_properties,
     }
 
 
@@ -250,6 +305,8 @@ def _record_to_molecule(record):
     )
     for key, value in record["properties"].items():
         mol.set_property(key, value)
+    for key, value in record["atom_properties"].items():
+        mol.set_property(key, value, scope="atom")
     return mol
 
 
@@ -682,11 +739,13 @@ def from_ase(
     copy_info=True,
     copy_arrays=True,
     info=None,
+    atom_keys=None,
 ):
     """Convert one ASE Atoms object to an atompack Molecule.
 
     Custom values from ``atoms.info``, ``atoms.arrays``, calculator results,
     and explicit ``info=`` overrides are stored as molecule-scope properties.
+    Keys listed in ``atom_keys`` are stored as atom-scope custom properties.
     Array shape is not used to infer atom-property scope during ingestion.
     """
     return _record_to_molecule(
@@ -701,6 +760,7 @@ def from_ase(
             copy_info=copy_info,
             copy_arrays=copy_arrays,
             info=info,
+            atom_keys=atom_keys,
         )
     )
 
@@ -712,6 +772,7 @@ def add_ase_batch(
     copy_info=True,
     copy_arrays=True,
     info=None,
+    atom_keys=None,
     batch_size=512,
 ):
     """Write many ASE Atoms objects efficiently, preserving supported metadata."""
@@ -719,6 +780,7 @@ def add_ase_batch(
     if not atoms_list:
         return
 
+    atom_keys = _normalize_atom_keys(atom_keys)
     info_overrides = _normalize_info_overrides(info, len(atoms_list))
     fast_key = None
     fast_records = []
@@ -742,8 +804,9 @@ def add_ase_batch(
             copy_info=copy_info,
             copy_arrays=copy_arrays,
             info=info_override,
+            atom_keys=atom_keys,
         )
-        if record["properties"]:
+        if record["properties"] or record["atom_properties"]:
             flush_fast()
             slow_records.append(_record_to_molecule(record))
             if len(slow_records) >= batch_size:
