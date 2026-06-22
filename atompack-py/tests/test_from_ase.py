@@ -7,7 +7,9 @@ import atompack
 import numpy as np
 import pytest
 
-ase = pytest.importorskip("ase")
+
+def requires_ase():
+    return pytest.importorskip("ase")
 
 
 @dataclass
@@ -201,6 +203,46 @@ def test_from_ase_custom_arrays_remain_molecule_properties() -> None:
     assert mol.has_property("descriptor", scope="atom") is False
 
 
+def test_from_ase_atom_keys_route_custom_values_to_atom_properties() -> None:
+    fixed_mask = np.array([0, 1], dtype=np.int32)
+    site_weight = np.array([0.25, 0.75], dtype=np.float64)
+    descriptor = np.arange(4, dtype=np.float32).reshape(2, 2)
+    atoms = FakeASEAtoms(
+        positions=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float64),
+        atomic_numbers=np.array([6, 8], dtype=np.int64),
+        pbc=np.array([False, False, False]),
+        arrays={"fixed_mask": fixed_mask, "descriptor": descriptor},
+        info={"site_weight": site_weight, "temperature": 300.0},
+    )
+
+    mol = atompack.from_ase(atoms, atom_keys=["fixed_mask", "site_weight"])
+
+    np.testing.assert_array_equal(mol.get_property("fixed_mask"), fixed_mask)
+    assert mol.has_property("fixed_mask", scope="atom") is True
+    assert mol.has_property("fixed_mask", scope="molecule") is False
+
+    np.testing.assert_allclose(mol.get_property("site_weight"), site_weight)
+    assert mol.has_property("site_weight", scope="atom") is True
+    assert mol.has_property("site_weight", scope="molecule") is False
+
+    np.testing.assert_allclose(mol.get_property("descriptor"), descriptor)
+    assert mol.has_property("descriptor", scope="molecule") is True
+    assert mol.has_property("descriptor", scope="atom") is False
+    assert mol.get_property("temperature") == pytest.approx(300.0)
+
+
+def test_from_ase_atom_keys_validate_first_dimension() -> None:
+    atoms = FakeASEAtoms(
+        positions=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float64),
+        atomic_numbers=np.array([6, 8], dtype=np.int64),
+        pbc=np.array([False, False, False]),
+        arrays={"bad_mask": np.array([0, 1, 0], dtype=np.int32)},
+    )
+
+    with pytest.raises(ValueError, match=r"bad_mask.*first dimension \(3\).*atom count \(2\)"):
+        atompack.from_ase(atoms, atom_keys=["bad_mask"])
+
+
 def test_from_ase_rejects_unsupported_enabled_custom_values_and_honors_optouts() -> None:
     atoms_with_bad_info = FakeASEAtoms(
         positions=np.array([[0.0, 0.0, 0.0]], dtype=np.float64),
@@ -352,6 +394,7 @@ def test_from_ase_info_override_kwarg_filters_builtins() -> None:
 
 
 def test_to_ase_does_not_duplicate_builtins_in_arrays() -> None:
+    requires_ase()
     # to_ase mirror of the from_ase fix: even if a user explicitly stuffs a
     # builtin name into custom properties via mol.set_property("forces", ...),
     # to_ase must NOT shovel that custom value into atoms.arrays["forces"]
@@ -420,7 +463,40 @@ def test_add_ase_batch_roundtrip(tmp_path) -> None:
     assert second.get_property("temperature") == pytest.approx(300.0)
 
 
+def test_add_ase_batch_atom_keys_allow_variable_atom_array_lengths(tmp_path) -> None:
+    path = tmp_path / "ase_variable_atom_keys.atp"
+    atoms_list = [
+        FakeASEAtoms(
+            positions=np.zeros((3, 3), dtype=np.float64),
+            atomic_numbers=np.ones(3, dtype=np.int64),
+            pbc=np.array([False, False, False]),
+            arrays={"fixed_mask": np.array([0, 1, 0], dtype=np.int32)},
+        ),
+        FakeASEAtoms(
+            positions=np.zeros((4, 3), dtype=np.float64),
+            atomic_numbers=np.ones(4, dtype=np.int64),
+            pbc=np.array([False, False, False]),
+            arrays={"fixed_mask": np.array([1, 0, 0, 1], dtype=np.int32)},
+        ),
+    ]
+
+    db = atompack.Database(str(path))
+    atompack.add_ase_batch(db, atoms_list, atom_keys=["fixed_mask"], batch_size=1)
+    db.flush()
+
+    reopened = atompack.Database.open(str(path))
+    flat = reopened.get_molecules_flat([0, 1])
+
+    np.testing.assert_array_equal(flat["n_atoms"], np.array([3, 4], dtype=np.uint32))
+    np.testing.assert_array_equal(
+        flat["atom_properties"]["fixed_mask"],
+        np.array([0, 1, 0, 1, 0, 0, 1], dtype=np.int32),
+    )
+    assert "properties" not in flat or "fixed_mask" not in flat["properties"]
+
+
 def test_to_ase_owned_maps_builtins_and_properties() -> None:
+    requires_ase()
     mol = atompack.Molecule.from_arrays(
         np.array([[0.0, 0.0, 0.0], [1.0, 0.5, 0.0]], dtype=np.float32),
         np.array([6, 8], dtype=np.uint8),
@@ -452,6 +528,7 @@ def test_to_ase_owned_maps_builtins_and_properties() -> None:
 
 @pytest.mark.parametrize("view_backed", [False, True])
 def test_to_ase_routes_tensor_properties_by_scope(tmp_path, view_backed: bool) -> None:
+    requires_ase()
     molecule_tensor = np.arange(8, dtype=np.float32).reshape(2, 2, 2)
     atom_tensor = np.arange(8, dtype=np.float64).reshape(2, 2, 2)
     mol = atompack.Molecule.from_arrays(
@@ -486,6 +563,7 @@ def test_to_ase_routes_tensor_properties_by_scope(tmp_path, view_backed: bool) -
 
 
 def test_to_ase_roundtrip_preserves_none_custom_property() -> None:
+    requires_ase()
     mol = atompack.Molecule.from_arrays(
         np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
         np.array([1], dtype=np.uint8),
@@ -502,6 +580,7 @@ def test_to_ase_roundtrip_preserves_none_custom_property() -> None:
 
 
 def test_to_ase_calc_modes() -> None:
+    requires_ase()
     mol = atompack.Molecule.from_arrays(
         np.array([[0.0, 0.0, 0.0], [1.0, 0.5, 0.0]], dtype=np.float32),
         np.array([6, 8], dtype=np.uint8),
@@ -526,6 +605,7 @@ def test_to_ase_calc_modes() -> None:
 
 
 def test_to_ase_view_backed_molecule(tmp_path) -> None:
+    requires_ase()
     path = tmp_path / "to_ase_view.atp"
     mol = atompack.Molecule.from_arrays(
         np.array([[0.0, 0.0, 0.0], [1.5, 0.0, 0.0]], dtype=np.float32),
@@ -556,6 +636,7 @@ def test_to_ase_view_backed_molecule(tmp_path) -> None:
 
 @pytest.mark.parametrize("mmap", [True, False])
 def test_database_to_ase_batch_matches_per_molecule(tmp_path, mmap: bool) -> None:
+    requires_ase()
     path = tmp_path / "to_ase_batch.atp"
     positions = np.array(
         [
@@ -620,6 +701,7 @@ def test_database_to_ase_batch_matches_per_molecule(tmp_path, mmap: bool) -> Non
 
 
 def test_to_ase_batch_with_molecule_list_matches_individual() -> None:
+    requires_ase()
     molecules = [
         atompack.Molecule.from_arrays(
             np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32),
@@ -651,6 +733,7 @@ def test_to_ase_batch_with_molecule_list_matches_individual() -> None:
 
 
 def test_to_ase_batch_nocopy_calc_mode(tmp_path) -> None:
+    requires_ase()
     path = tmp_path / "to_ase_batch_nocopy.atp"
     positions = np.array(
         [
@@ -691,6 +774,7 @@ def test_to_ase_batch_nocopy_calc_mode(tmp_path) -> None:
 
 
 def test_to_ase_batch_none_calc_mode_preserves_results(tmp_path) -> None:
+    requires_ase()
     path = tmp_path / "to_ase_batch_none.atp"
     positions = np.array(
         [
