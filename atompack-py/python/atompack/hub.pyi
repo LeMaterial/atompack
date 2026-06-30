@@ -56,6 +56,13 @@ class AtompackReader:
             supported.
         """
         ...
+    def get_molecules_flat(self, indices: Sequence[int]) -> dict[str, Any]:
+        """
+        Fetch many molecules as one flat batch while preserving input order.
+
+        This mirrors ``Database.get_molecules_flat`` across a merged shard set.
+        """
+        ...
     def to_ase_batch(
         self,
         indices: Sequence[int] | None = None,
