@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Sequence
+from typing import Any, Iterator, Sequence, overload
 
 from . import Molecule
 
@@ -26,6 +26,7 @@ class AtompackReader:
     def __len__(self) -> int:
         """Return the total number of molecules across all opened files."""
         ...
+    @overload
     def __getitem__(self, index: int) -> Molecule:
         """
         Fetch one molecule by index.
@@ -34,6 +35,8 @@ class AtompackReader:
         dataset, not within a single shard.
         """
         ...
+    @overload
+    def __getitem__(self, index: slice) -> list[Molecule]: ...
     def get_molecule(self, index: int) -> Molecule:
         """
         Fetch one molecule by global index across the underlying shard set.
@@ -74,6 +77,9 @@ class AtompackReader:
         ...
     def close(self) -> None:
         """Close the underlying databases and invalidate the reader."""
+        ...
+    def __iter__(self) -> Iterator[Molecule]:
+        """Iterate over molecules in logical reader order."""
         ...
 
 def download(
