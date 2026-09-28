@@ -1,4 +1,4 @@
-//! Grouped records and the extensions directory.
+//! Extensions directory and the sections it references (grouped records).
 //!
 //! A group references related records (e.g. adsorbate+slab, slab, gas) by
 //! index; records are stored once and may belong to any number of groups.
@@ -23,16 +23,128 @@
 
 use super::*;
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
-pub(super) const GROUPS_TAG: &str = "groups";
+const GROUPS_TAG: &str = "groups";
 const EXTENSIONS_VERSION: u32 = 1;
 const GROUPS_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Extension {
-    pub(super) tag: String,
-    pub(super) offset: u64,
-    pub(super) len: u64,
+struct Extension {
+    tag: String,
+    offset: u64,
+    len: u64,
+}
+
+/// Optional sections referenced from the header through the extensions
+/// directory. Sections are decoded on first access and only rewritten by
+/// `flush` when they changed.
+#[derive(Debug, Default)]
+pub(super) struct Extensions {
+    /// Committed directory entries.
+    directory: Vec<Extension>,
+    /// (offset, len) of the committed directory, written into the header.
+    directory_span: (u64, u64),
+    groups: OnceLock<BTreeMap<String, Grouping>>,
+    /// Groups changed since the last flush.
+    groups_dirty: bool,
+}
+
+impl Extensions {
+    /// Read the directory at `span` and check every section lies in
+    /// `data_start..committed_end`.
+    pub(super) fn open(
+        file: &mut File,
+        span: (u64, u64),
+        data_start: u64,
+        committed_end: u64,
+    ) -> Result<Self> {
+        let (offset, len) = span;
+        if len == 0 {
+            return Ok(Self::default());
+        }
+        file.seek(SeekFrom::Start(offset))?;
+        let mut bytes = vec![0u8; len as usize];
+        file.read_exact(&mut bytes)?;
+        let directory = decode_extensions(&bytes)?;
+        for ext in &directory {
+            let end = ext.offset.checked_add(ext.len);
+            if ext.offset < data_start || end.is_none_or(|end| end > committed_end) {
+                return Err(Error::InvalidData(format!(
+                    "Extension '{}' is out of bounds",
+                    ext.tag
+                )));
+            }
+        }
+        Ok(Self {
+            directory,
+            directory_span: span,
+            ..Self::default()
+        })
+    }
+
+    /// All groupings; `read(offset, len)` loads the section on first access.
+    pub(super) fn groups(
+        &self,
+        num_records: usize,
+        read: impl FnOnce(u64, u64) -> Result<Vec<u8>>,
+    ) -> Result<&BTreeMap<String, Grouping>> {
+        if let Some(groups) = self.groups.get() {
+            return Ok(groups);
+        }
+        let groups = match self.directory.iter().find(|ext| ext.tag == GROUPS_TAG) {
+            Some(ext) => decode_groups(&read(ext.offset, ext.len)?, num_records)?,
+            None => BTreeMap::new(),
+        };
+        Ok(self.groups.get_or_init(|| groups))
+    }
+
+    pub(super) fn add_groups(
+        &mut self,
+        name: &str,
+        groups: Grouping,
+        num_records: usize,
+        read: impl FnOnce(u64, u64) -> Result<Vec<u8>>,
+    ) -> Result<()> {
+        groups.validate(num_records)?;
+        self.groups(num_records, read)?;
+        let all = self.groups.get_mut().expect("groups were just loaded");
+        match all.get_mut(name) {
+            Some(existing) => existing.append(groups)?,
+            None => {
+                all.insert(name.to_string(), groups);
+            }
+        }
+        self.groups_dirty = true;
+        Ok(())
+    }
+
+    /// Append changed sections and a new directory to `file`. Returns the
+    /// directory span for the header; unchanged sections are reused as is.
+    pub(super) fn write_changed(&mut self, file: &mut File) -> Result<(u64, u64)> {
+        if self.groups_dirty {
+            let groups = self.groups.get().expect("changed groups are loaded");
+            let groups_bytes = encode_groups(groups);
+            let groups_offset = file.seek(SeekFrom::End(0))?;
+            file.write_all(&groups_bytes)?;
+            self.directory.retain(|ext| ext.tag != GROUPS_TAG);
+            self.directory.push(Extension {
+                tag: GROUPS_TAG.to_string(),
+                offset: groups_offset,
+                len: groups_bytes.len() as u64,
+            });
+            let directory_bytes = encode_extensions(&self.directory);
+            let directory_offset = file.seek(SeekFrom::End(0))?;
+            file.write_all(&directory_bytes)?;
+            self.directory_span = (directory_offset, directory_bytes.len() as u64);
+        }
+        Ok(self.directory_span)
+    }
+
+    /// Call once the header referencing `write_changed`'s output is on disk.
+    pub(super) fn mark_flushed(&mut self) {
+        self.groups_dirty = false;
+    }
 }
 
 /// Per-group property values, one entry per group.
@@ -251,7 +363,7 @@ fn put_str(buf: &mut Vec<u8>, s: &str) {
     buf.extend_from_slice(s.as_bytes());
 }
 
-pub(super) fn encode_extensions(entries: &[Extension]) -> Vec<u8> {
+fn encode_extensions(entries: &[Extension]) -> Vec<u8> {
     let mut buf = Vec::new();
     buf.extend_from_slice(&EXTENSIONS_VERSION.to_le_bytes());
     buf.extend_from_slice(&(entries.len() as u32).to_le_bytes());
@@ -263,7 +375,7 @@ pub(super) fn encode_extensions(entries: &[Extension]) -> Vec<u8> {
     buf
 }
 
-pub(super) fn encode_groups(groups: &BTreeMap<String, Grouping>) -> Vec<u8> {
+fn encode_groups(groups: &BTreeMap<String, Grouping>) -> Vec<u8> {
     let mut buf = Vec::new();
     buf.extend_from_slice(&GROUPS_VERSION.to_le_bytes());
     buf.extend_from_slice(&(groups.len() as u32).to_le_bytes());
@@ -370,7 +482,7 @@ impl<'a> Reader<'a> {
     }
 }
 
-pub(super) fn decode_extensions(bytes: &[u8]) -> Result<Vec<Extension>> {
+fn decode_extensions(bytes: &[u8]) -> Result<Vec<Extension>> {
     let mut r = Reader {
         bytes,
         pos: 0,
@@ -397,10 +509,7 @@ pub(super) fn decode_extensions(bytes: &[u8]) -> Result<Vec<Extension>> {
     Ok(entries)
 }
 
-pub(super) fn decode_groups(
-    bytes: &[u8],
-    num_records: usize,
-) -> Result<BTreeMap<String, Grouping>> {
+fn decode_groups(bytes: &[u8], num_records: usize) -> Result<BTreeMap<String, Grouping>> {
     let mut r = Reader {
         bytes,
         pos: 0,
@@ -616,12 +725,12 @@ mod tests {
             offset: HEADER_REGION_SIZE,
             len: 1,
         };
-        db.extensions.push(future.clone());
+        db.extensions.directory.push(future.clone());
         db.add_groups("ordered", ordered()).unwrap();
         db.flush().unwrap();
 
         let db = AtomDatabase::open(temp.path()).unwrap();
-        assert!(db.extensions.contains(&future));
+        assert!(db.extensions.directory.contains(&future));
         assert_eq!(db.groups().unwrap()["ordered"], ordered());
     }
 
