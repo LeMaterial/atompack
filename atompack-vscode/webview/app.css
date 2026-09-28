@@ -35,6 +35,13 @@
     font-family: var(--vscode-font-family);
     font-size: var(--vscode-font-size);
   }
+  /* VS Code tags <body> with its theme kind; match native controls to it. */
+  body:is(.vscode-dark, .vscode-high-contrast:not(.vscode-high-contrast-light)) {
+    color-scheme: dark;
+  }
+  input[type='checkbox'] {
+    accent-color: var(--vscode-button-background);
+  }
   main {
     margin: 0;
     max-width: none;

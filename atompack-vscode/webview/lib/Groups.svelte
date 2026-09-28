@@ -124,10 +124,12 @@
         <tbody class="font-mono">
           {#each filtered.slice(page * PAGE, (page + 1) * PAGE) as g (g)}
             <tr
-              class="cursor-pointer border-b border-line/40 hover:bg-hover"
+              class="cursor-pointer border-b border-line/40 select-none hover:bg-hover"
               class:!bg-selected={g === selected}
               class:text-selected-fg={g === selected}
               onclick={() => (selected = g)}
+              ondblclick={() => ((selected = g), compare_members())}
+              title="Double-click to compare this group's members"
             >
               <td class="px-2 py-0.5">{g}</td>
               {#each info.properties as p (p.key)}<td class="px-2">{fmt(columns[p.key]?.[g])}</td>{/each}

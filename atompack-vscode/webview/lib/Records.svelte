@@ -35,6 +35,12 @@
   }
 
   function onkeydown(event: KeyboardEvent) {
+    if (event.target instanceof HTMLInputElement) return
+    if (event.key === ` `) {
+      event.preventDefault()
+      toggle_compare(view.selected)
+      return
+    }
     const step = { ArrowDown: 1, ArrowUp: -1, PageDown: PAGE, PageUp: -PAGE }[event.key]
     if (step === undefined) return
     event.preventDefault()
@@ -56,7 +62,10 @@
         class="w-24"
         onchange={(e) => select(e.currentTarget.valueAsNumber)}
       />
-      <input class="ml-auto w-40" placeholder="filter columns…" bind:value={view.column_filter} />
+      <span class="ml-auto text-muted" title="Toggle the compare checkbox, double-click a row, or press Space">
+        {compare.records.length}/{MAX_COMPARE} in compare
+      </span>
+      <input class="w-40" placeholder="filter columns…" bind:value={view.column_filter} />
       {#if error}<span class="text-error">{error}</span>{/if}
     </div>
     <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_static_element_interactions -->
@@ -64,6 +73,7 @@
       <table class="w-full text-xs whitespace-nowrap">
         <thead class="sticky top-0 bg-panel text-left">
           <tr>
+            <th class="pl-2" title="In compare (double-click a row or press Space)">⧉</th>
             <th class="px-2 py-1">#</th>
             <th class="px-2">formula</th>
             <th class="px-2 text-right">atoms</th>
@@ -75,13 +85,29 @@
         </thead>
         <tbody class="font-mono">
           {#each rows as row (row.index)}
+            {@const in_compare = compare.records.includes(row.index)}
             <tr
               id="record-{row.index}"
-              class="cursor-pointer border-b border-line/40 hover:bg-hover"
+              class="cursor-pointer border-b border-line/40 select-none hover:bg-hover"
               class:!bg-selected={row.index === view.selected}
               class:text-selected-fg={row.index === view.selected}
               onclick={() => (view.selected = row.index)}
+              ondblclick={() => toggle_compare(row.index)}
             >
+              <td class="pl-2">
+                <input
+                  type="checkbox"
+                  class="align-middle"
+                  checked={in_compare}
+                  disabled={!in_compare && compare.records.length >= MAX_COMPARE}
+                  title={in_compare ? `Remove from compare` : `Add to compare`}
+                  onclick={(e) => {
+                    e.stopPropagation()
+                    toggle_compare(row.index)
+                  }}
+                  ondblclick={(e) => e.stopPropagation()}
+                />
+              </td>
               <td class="px-2 py-0.5">{row.index}</td>
               <td class="px-2">{formula(row.composition)}</td>
               <td class="px-2 text-right">{row.n_atoms}</td>
