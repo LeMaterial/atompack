@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { type CameraPose, compare, MAX_COMPARE, toggle_compare } from './state.svelte'
+  import { type CameraPose, compare, copy_records, MAX_COMPARE, toggle_compare } from './state.svelte'
   import Viewer from './Viewer.svelte'
 
   let sync = $state(true)
   let camera = $state<CameraPose>({})
   let columns = $state(3)
+  let note = $state(``)
 </script>
 
 <div class="flex h-full min-h-0 flex-col">
@@ -15,7 +16,16 @@
       columns <input type="range" min="1" max="6" bind:value={columns} />
     </label>
     <button class="btn" onclick={() => (camera = {})}>Reset view</button>
-    <button class="btn ml-auto" onclick={() => (compare.records = [])}>Clear</button>
+    {#if note}<span class="text-muted">{note}</span>{/if}
+    <button
+      class="btn ml-auto"
+      disabled={!compare.records.length}
+      title="Copy these records' numbers as a Python list"
+      onclick={() => copy_records(compare.records).then((message) => (note = message), (err) => (note = err.message))}
+    >
+      copy #
+    </button>
+    <button class="btn" onclick={() => (compare.records = [])}>Clear</button>
   </div>
   {#if compare.records.length === 0}
     <p class="p-4 text-muted">Add records from the Records tab or group members from the Groups tab.</p>

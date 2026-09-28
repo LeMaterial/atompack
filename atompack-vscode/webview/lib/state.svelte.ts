@@ -46,5 +46,11 @@ export function set_compare(entries: { record: number; label?: string }[]) {
   compare.labels = Object.fromEntries(entries.filter((e) => e.label).map((e) => [e.record, e.label!]))
 }
 
+/** Copy record numbers as a Python list, e.g. to index the same file from atompack. */
+export async function copy_records(indices: ArrayLike<number>) {
+  await navigator.clipboard.writeText(`[${Array.from(indices).join(`, `)}]`)
+  return `copied ${indices.length.toLocaleString()} record numbers`
+}
+
 /** Shared camera pose for synchronized viewers (same coordinate frame). */
 export type CameraPose = { position?: Vec3; target?: Vec3 }

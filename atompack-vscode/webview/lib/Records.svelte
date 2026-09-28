@@ -5,7 +5,7 @@
   import { parse_filter, select_rows } from './query'
   import { api, type RecordRow } from './rpc'
   import { scan, start_scan, table } from './scan.svelte'
-  import { compare, MAX_COMPARE, records_view as view, toggle_compare } from './state.svelte'
+  import { compare, copy_records, MAX_COMPARE, records_view as view, toggle_compare } from './state.svelte'
   import Viewer from './Viewer.svelte'
 
   const PAGE = 100
@@ -178,6 +178,20 @@
       {#if view.sort}
         <button class="btn" title="Sort direction" onclick={() => view.sort && (view.sort.desc = !view.sort.desc)}>
           {view.sort.desc ? `↓` : `↑`}
+        </button>
+      {/if}
+      {#if order}
+        {@const shown = order}
+        <button
+          class="btn"
+          title="Copy these records' numbers, in this order, as a Python list"
+          onclick={() =>
+            copy_records(shown.map((row) => table.ids[row])).then(
+              (message) => (note = message),
+              (err) => (note = err.message),
+            )}
+        >
+          copy #
         </button>
       {/if}
       {#if active && !scan.finished}
