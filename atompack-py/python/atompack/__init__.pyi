@@ -1,6 +1,6 @@
 """Type stubs for atompack"""
 
-from typing import Any, Iterable, Literal, Sequence, overload
+from typing import Any, Iterable, Iterator, Literal, Sequence, overload
 
 import numpy as np
 import numpy.typing as npt
@@ -647,41 +647,19 @@ class Database:
         ... )
         """
         ...
-    def group_names(self) -> list[str]:
-        """Names of the groupings stored in the database."""
-        ...
-    def num_groups(self, name: str) -> int:
-        """Number of groups in the grouping ``name``."""
-        ...
-    def group_roles(self, name: str) -> list[str]:
-        """Role names of the grouping ``name`` (empty for ordered groups)."""
-        ...
-    def group_members(self, name: str, index: int) -> dict[str, int] | list[int]:
+    @property
+    def groups(self) -> Groups:
         """
-        Record indices of one group, without reading any molecule.
+        Groupings stored in the database, by name.
 
-        Returns ``{role: index}`` for named roles, ``[index, ...]`` otherwise.
-        """
-        ...
-    def group_properties(self, name: str) -> dict[str, npt.NDArray[Any] | list[str]]:
-        """Group properties as columns: numpy arrays for numbers, lists for str."""
-        ...
-    def get_group(self, name: str, index: int) -> dict[str, Any]:
-        """
-        Load one group.
-
-        Returns
-        -------
-        dict
-            ``{"members": ..., "properties": {...}}`` where ``members`` maps
-            role to Molecule (named roles) or is a list of Molecules.
-        """
-        ...
-    def get_groups(self, name: str, indices: list[int]) -> list[dict[str, Any]]:
-        """
-        Load several groups with parallel reads.
-
-        Records shared between the requested groups are read once.
+        Examples
+        --------
+        >>> ads = db.groups["adsorption"]
+        >>> len(ads), ads.roles, ads.properties["adsorption_energy"]
+        >>> group = ads[0]
+        >>> group["slab"]  # Molecule
+        >>> group.properties["adsorption_energy"]
+        >>> ads[[0, 5, 7]]  # batch read, shared records read once
         """
         ...
     def flush(self) -> None:
@@ -850,3 +828,64 @@ def add_ase_batch(
 
 __version__: str
 __all__: list[str]
+
+class Groups:
+    """Mapping of grouping name to :class:`Grouping`, available as ``Database.groups``."""
+
+    def __getitem__(self, name: str) -> Grouping: ...
+    def __contains__(self, name: str) -> bool: ...
+    def __len__(self) -> int: ...
+    def __iter__(self) -> Iterator[str]: ...
+    def keys(self) -> list[str]:
+        """Names of the groupings."""
+        ...
+
+class Grouping:
+    """
+    A named sequence of groups sharing roles and property keys.
+
+    Index with an int for one :class:`Group`, or with a slice or list of ints
+    for a list of groups (records shared between them are read once).
+    """
+
+    @property
+    def name(self) -> str: ...
+    @property
+    def roles(self) -> list[str]:
+        """Role names (empty for ordered groups)."""
+        ...
+    @property
+    def properties(self) -> dict[str, npt.NDArray[Any] | list[str]]:
+        """Group properties as columns: numpy arrays for numbers, lists for str."""
+        ...
+    def __len__(self) -> int: ...
+    @overload
+    def __getitem__(self, index: int) -> Group: ...
+    @overload
+    def __getitem__(
+        self, index: slice | Sequence[int] | npt.NDArray[np.integer[Any]]
+    ) -> list[Group]: ...
+    def __iter__(self) -> Iterator[Group]: ...
+
+class Group:
+    """
+    One group of related records.
+
+    ``group[role]`` (named roles) or ``group[i]`` (ordered groups) is a
+    :class:`Molecule`.
+    """
+
+    @property
+    def members(self) -> dict[str, Molecule] | list[Molecule]:
+        """``{role: Molecule}`` for named roles, ``[Molecule, ...]`` otherwise."""
+        ...
+    @property
+    def indices(self) -> dict[str, int] | list[int]:
+        """Record indices, shaped like ``members``."""
+        ...
+    @property
+    def properties(self) -> dict[str, int | float | str]: ...
+    def __getitem__(self, key: str | int) -> Molecule: ...
+    def __contains__(self, key: object) -> bool: ...
+    def __len__(self) -> int: ...
+    def __iter__(self) -> Iterator[Any]: ...

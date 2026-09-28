@@ -38,6 +38,7 @@ Read back from database:
 """
 
 from . import hub
+from ._atompack_rs import Group, Grouping, Groups
 from ._atompack_rs import PyAtom as Atom
 from ._atompack_rs import PyAtomDatabase as Database
 from ._atompack_rs import PyMolecule as Molecule
@@ -48,6 +49,9 @@ __all__ = [
     "Atom",
     "Molecule",
     "Database",
+    "Groups",
+    "Grouping",
+    "Group",
     "from_ase",
     "to_ase",
     "to_ase_batch",

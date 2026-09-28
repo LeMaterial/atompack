@@ -33,25 +33,37 @@ def test_named_groups_round_trip_and_share_records(tmp_path: Path) -> None:
 
     for db in (atompack.Database.open(str(path)), atompack.Database.open(str(path), mmap=False)):
         assert len(db) == 4
-        assert db.group_names() == ["adsorption", "ordered"]
-        assert db.num_groups("adsorption") == 2
-        assert db.group_roles("adsorption") == ["adslab", "slab", "gas"]
-        assert db.group_roles("ordered") == []
-        assert db.group_members("adsorption", 1) == {"adslab": 2, "slab": 0, "gas": 3}
-        assert db.group_members("ordered", 0) == [3, 1, 2]
+        assert list(db.groups) == ["adsorption", "ordered"]
+        assert "adsorption" in db.groups and "missing" not in db.groups
+        ads = db.groups["adsorption"]
+        assert (ads.name, len(ads), ads.roles) == ("adsorption", 2, ["adslab", "slab", "gas"])
+        assert db.groups["ordered"].roles == []
 
-        props = db.group_properties("adsorption")
+        props = ads.properties
         np.testing.assert_array_equal(props["e_ads"], [-1.5, -0.25])
         assert props["e_ads"].dtype == np.float64
         assert props["n"].dtype == np.int64
         assert props["id"] == ["a", "b"]
 
-        g0, g1 = db.get_groups("adsorption", [0, 1])
-        assert g0["properties"] == {"e_ads": -1.5, "id": "a", "n": 2}
-        assert g1["members"]["gas"].energy == 3.0
-        # The clean slab is shared by both groups but stored once.
-        assert g0["members"]["slab"].energy == g1["members"]["slab"].energy == 0.0
-        assert [m.energy for m in db.get_group("ordered", 0)["members"]] == [3.0, 1.0, 2.0]
+        g = ads[1]
+        assert isinstance(g, atompack.Group)
+        assert g.indices == {"adslab": 2, "slab": 0, "gas": 3}
+        assert g.properties == {"e_ads": -0.25, "id": "b", "n": 3}
+        assert g["gas"].energy == 3.0
+        assert "slab" in g and len(g) == 3 and list(g) == ["adslab", "slab", "gas"]
+        assert ads[-1].indices == g.indices
+
+        # Batches (list / slice / numpy) read the shared clean slab once.
+        for batch in (ads[[0, 1]], ads[:], ads[np.array([0, 1])]):
+            assert [grp.indices["slab"] for grp in batch] == [0, 0]
+            assert [grp["slab"].energy for grp in batch] == [0.0, 0.0]
+        assert [grp.properties["id"] for grp in ads] == ["a", "b"]
+        assert ads[::-1][0].properties["id"] == "b"
+
+        ordered = db.groups["ordered"][0]
+        assert ordered.indices == [3, 1, 2]
+        assert [m.energy for m in ordered] == [3.0, 1.0, 2.0]
+        assert ordered[0].energy == 3.0
 
 
 def test_append_groups_across_sessions(tmp_path: Path) -> None:
@@ -71,20 +83,21 @@ def test_append_groups_across_sessions(tmp_path: Path) -> None:
     db.flush()
 
     db = atompack.Database.open(str(path))
-    assert db.num_groups("pairs") == 3
-    assert db.group_roles("pairs") == ["a", "b", "c"]
-    assert db.group_members("pairs", 1) == {"a": 4, "b": 2}
-    assert db.group_members("pairs", 2) == {"a": 3, "c": 1}
-    np.testing.assert_array_equal(db.group_properties("pairs")["y"], [1.0, 2.0, 3.0])
+    pairs = db.groups["pairs"]
+    assert len(pairs) == 3
+    assert pairs.roles == ["a", "b", "c"]
+    assert pairs[1].indices == {"a": 4, "b": 2}
+    assert pairs[2].indices == {"a": 3, "c": 1}
+    np.testing.assert_array_equal(pairs.properties["y"], [1.0, 2.0, 3.0])
 
 
 def test_files_without_groups(tmp_path: Path) -> None:
     path = tmp_path / "plain.atp"
     _db(path).flush()
     db = atompack.Database.open(str(path))
-    assert db.group_names() == []
+    assert len(db.groups) == 0 and list(db.groups) == []
     with pytest.raises(KeyError):
-        db.num_groups("missing")
+        db.groups["missing"]
 
 
 @pytest.mark.parametrize(
@@ -102,7 +115,7 @@ def test_invalid_groups_are_rejected(tmp_path: Path, members, properties, error)
     db = _db(tmp_path / "bad.atp")
     with pytest.raises(error):
         db.add_groups("g", members, properties)
-    assert db.group_names() == []
+    assert list(db.groups) == []
 
 
 def test_group_errors(tmp_path: Path) -> None:
@@ -116,7 +129,8 @@ def test_group_errors(tmp_path: Path) -> None:
     db.flush()
 
     db = atompack.Database.open(str(path))
-    with pytest.raises(IndexError):
-        db.get_group("g", 1)
+    for bad in (1, -2, [0, 1]):
+        with pytest.raises(IndexError):
+            db.groups["g"][bad]
     with pytest.raises(ValueError, match="read-only"):
         db.add_groups("g", [[0]], {"y": [1.0]})

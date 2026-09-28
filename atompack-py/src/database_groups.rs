@@ -1,6 +1,7 @@
 use super::*;
 use atompack::{GroupColumn, Grouping};
 use numpy::PyReadonlyArray2;
+use pyo3::types::{PyIterator, PySlice};
 use std::collections::HashMap;
 use std::ops::Range;
 
@@ -8,14 +9,14 @@ fn db_err(e: atompack::Error) -> PyErr {
     PyValueError::new_err(format!("{}", e))
 }
 
-pub(super) fn grouping<'a>(db: &'a AtomDatabase, name: &str) -> PyResult<&'a Grouping> {
+fn grouping<'a>(db: &'a AtomDatabase, name: &str) -> PyResult<&'a Grouping> {
     db.groups()
         .map_err(db_err)?
         .get(name)
         .ok_or_else(|| PyKeyError::new_err(format!("No grouping named '{}'", name)))
 }
 
-pub(super) fn member_range(g: &Grouping, index: usize) -> PyResult<Range<usize>> {
+fn member_range(g: &Grouping, index: usize) -> PyResult<Range<usize>> {
     g.member_range(index).ok_or_else(|| {
         PyIndexError::new_err(format!(
             "Group index {} out of bounds for grouping of length {}",
@@ -128,7 +129,7 @@ pub(super) fn parse_grouping(
 }
 
 /// Record indices of one group: {role: index} for named roles, else [index].
-pub(super) fn members_object<'py, T>(
+fn members_object<'py, T>(
     py: Python<'py>,
     g: &Grouping,
     range: Range<usize>,
@@ -152,7 +153,7 @@ where
     Ok(dict.into_any())
 }
 
-pub(super) fn property_columns<'py>(py: Python<'py>, g: &Grouping) -> PyResult<Bound<'py, PyDict>> {
+fn property_columns<'py>(py: Python<'py>, g: &Grouping) -> PyResult<Bound<'py, PyDict>> {
     let dict = PyDict::new(py);
     for (key, column) in &g.properties {
         match column {
@@ -180,14 +181,14 @@ fn property_values<'py>(
     Ok(dict)
 }
 
-/// Load groups as {"members": ..., "properties": ...} dicts. Records shared
-/// between the requested groups are read and decompressed once.
-pub(super) fn get_groups_impl<'py>(
+/// Load groups; records shared between the requested groups are read and
+/// decompressed once.
+fn load_groups(
     db: &PyAtomDatabase,
-    py: Python<'py>,
+    py: Python<'_>,
     name: &str,
     indices: Vec<usize>,
-) -> PyResult<Vec<Bound<'py, PyDict>>> {
+) -> PyResult<Vec<PyGroup>> {
     let g = grouping(&db.inner, name)?;
     let ranges = indices
         .iter()
@@ -212,13 +213,241 @@ pub(super) fn get_groups_impl<'py>(
         .into_iter()
         .zip(indices)
         .map(|(range, index)| {
-            let members = members_object(py, g, range, |r| {
+            let members = members_object(py, g, range.clone(), |r| {
                 Ok(PyMolecule::from_view(views[slot[&r]].clone()))
             })?;
-            let dict = PyDict::new(py);
-            dict.set_item("members", members)?;
-            dict.set_item("properties", property_values(py, g, index)?)?;
-            Ok(dict)
+            Ok(PyGroup {
+                members: members.unbind(),
+                indices: members_object(py, g, range, Ok)?.unbind(),
+                properties: property_values(py, g, index)?.unbind(),
+            })
         })
         .collect()
+}
+
+fn normalize_index(index: isize, len: usize) -> PyResult<usize> {
+    let resolved = if index < 0 {
+        index + len as isize
+    } else {
+        index
+    };
+    if resolved < 0 || resolved as usize >= len {
+        return Err(PyIndexError::new_err(format!(
+            "Group index {} out of bounds for grouping of length {}",
+            index, len
+        )));
+    }
+    Ok(resolved as usize)
+}
+
+/// Mapping of grouping name -> Grouping, available as `Database.groups`.
+#[pyclass(name = "Groups", module = "atompack")]
+pub(crate) struct PyGroups {
+    pub(super) db: Py<PyAtomDatabase>,
+}
+
+impl PyGroups {
+    fn names(&self, py: Python<'_>) -> PyResult<Vec<String>> {
+        let db = self.db.borrow(py);
+        let groups = db.inner.groups().map_err(db_err)?;
+        Ok(groups.keys().cloned().collect())
+    }
+}
+
+#[pymethods]
+impl PyGroups {
+    fn __getitem__(&self, py: Python<'_>, name: &str) -> PyResult<PyGrouping> {
+        grouping(&self.db.borrow(py).inner, name)?;
+        Ok(PyGrouping {
+            db: self.db.clone_ref(py),
+            name: name.to_string(),
+        })
+    }
+
+    fn __contains__(&self, py: Python<'_>, name: &str) -> PyResult<bool> {
+        Ok(self.names(py)?.iter().any(|n| n == name))
+    }
+
+    fn __len__(&self, py: Python<'_>) -> PyResult<usize> {
+        Ok(self.names(py)?.len())
+    }
+
+    fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyIterator>> {
+        PyList::new(py, self.names(py)?)?.try_iter()
+    }
+
+    /// Names of the groupings.
+    fn keys(&self, py: Python<'_>) -> PyResult<Vec<String>> {
+        self.names(py)
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        Ok(format!("Groups({:?})", self.names(py)?))
+    }
+}
+
+/// A named grouping: a sequence of groups sharing roles and property keys.
+#[pyclass(name = "Grouping", module = "atompack")]
+pub(crate) struct PyGrouping {
+    db: Py<PyAtomDatabase>,
+    name: String,
+}
+
+impl PyGrouping {
+    fn with<T>(&self, py: Python<'_>, f: impl FnOnce(&Grouping) -> PyResult<T>) -> PyResult<T> {
+        f(grouping(&self.db.borrow(py).inner, &self.name)?)
+    }
+
+    fn load(&self, py: Python<'_>, indices: Vec<usize>) -> PyResult<Vec<PyGroup>> {
+        load_groups(&self.db.borrow(py), py, &self.name, indices)
+    }
+}
+
+#[pymethods]
+impl PyGrouping {
+    #[getter]
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    /// Role names (empty for ordered groups).
+    #[getter]
+    fn roles(&self, py: Python<'_>) -> PyResult<Vec<String>> {
+        self.with(py, |g| Ok(g.roles.clone()))
+    }
+
+    /// Group properties as columns: numpy arrays for numbers, lists for str.
+    #[getter]
+    fn properties<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        self.with(py, |g| property_columns(py, g))
+    }
+
+    fn __len__(&self, py: Python<'_>) -> PyResult<usize> {
+        self.with(py, |g| Ok(g.len()))
+    }
+
+    /// `grouping[i]` -> Group; `grouping[a:b]` or `grouping[[i, j]]` -> list of Groups.
+    fn __getitem__<'py>(
+        &self,
+        py: Python<'py>,
+        index: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let len = self.__len__(py)?;
+        if let Ok(i) = index.extract::<isize>() {
+            let group = self.load(py, vec![normalize_index(i, len)?])?.remove(0);
+            return Ok(Bound::new(py, group)?.into_any());
+        }
+        let indices: Vec<usize> = if let Ok(slice) = index.downcast::<PySlice>() {
+            let s = slice.indices(len as isize)?;
+            (0..s.slicelength)
+                .map(|k| (s.start + k as isize * s.step) as usize)
+                .collect()
+        } else {
+            index
+                .extract::<Vec<isize>>()?
+                .into_iter()
+                .map(|i| normalize_index(i, len))
+                .collect::<PyResult<_>>()?
+        };
+        Ok(PyList::new(py, self.load(py, indices)?)?.into_any())
+    }
+
+    fn __iter__(slf: PyRef<'_, Self>) -> PyGroupingIter {
+        PyGroupingIter {
+            grouping: slf.into(),
+            next: 0,
+        }
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        self.with(py, |g| {
+            let keys: Vec<_> = g.properties.iter().map(|(k, _)| k).collect();
+            Ok(format!(
+                "Grouping({:?}, len={}, roles={:?}, properties={:?})",
+                self.name,
+                g.len(),
+                g.roles,
+                keys
+            ))
+        })
+    }
+}
+
+#[pyclass(module = "atompack")]
+pub(crate) struct PyGroupingIter {
+    grouping: Py<PyGrouping>,
+    next: usize,
+}
+
+#[pymethods]
+impl PyGroupingIter {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<PyGroup>> {
+        let grouping = self.grouping.borrow(py);
+        if self.next >= grouping.__len__(py)? {
+            return Ok(None);
+        }
+        let group = grouping.load(py, vec![self.next])?.remove(0);
+        self.next += 1;
+        Ok(Some(group))
+    }
+}
+
+/// One group: `group[role]` (or `group[i]` for ordered groups) is a Molecule.
+#[pyclass(name = "Group", module = "atompack")]
+pub(crate) struct PyGroup {
+    members: Py<PyAny>,
+    indices: Py<PyAny>,
+    properties: Py<PyDict>,
+}
+
+#[pymethods]
+impl PyGroup {
+    /// {role: Molecule} for named roles, [Molecule, ...] for ordered groups.
+    #[getter]
+    fn members(&self, py: Python<'_>) -> Py<PyAny> {
+        self.members.clone_ref(py)
+    }
+
+    /// Record indices, shaped like `members`.
+    #[getter]
+    fn indices(&self, py: Python<'_>) -> Py<PyAny> {
+        self.indices.clone_ref(py)
+    }
+
+    #[getter]
+    fn properties(&self, py: Python<'_>) -> Py<PyDict> {
+        self.properties.clone_ref(py)
+    }
+
+    fn __getitem__<'py>(
+        &self,
+        py: Python<'py>,
+        key: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        self.members.bind(py).get_item(key)
+    }
+
+    fn __contains__(&self, py: Python<'_>, key: &Bound<'_, PyAny>) -> PyResult<bool> {
+        self.members.bind(py).contains(key)
+    }
+
+    fn __len__(&self, py: Python<'_>) -> PyResult<usize> {
+        self.members.bind(py).len()
+    }
+
+    fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyIterator>> {
+        self.members.bind(py).try_iter()
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        Ok(format!(
+            "Group(indices={}, properties={})",
+            self.indices.bind(py).repr()?,
+            self.properties.bind(py).repr()?
+        ))
+    }
 }

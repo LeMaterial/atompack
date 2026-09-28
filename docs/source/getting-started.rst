@@ -119,14 +119,20 @@ of groups, and one file can hold several groupings:
    db.flush()
 
    db = atompack.Database.open("adsorption.atp")
-   group = db.get_group("adsorption", 0)
-   group["members"]["slab"]                      # Molecule
-   group["properties"]["adsorption_energy"]      # -1.23
-   db.get_groups("adsorption", [0, 1])           # batch read, shared records read once
-   db.group_members("adsorption", 1)             # {"adslab": 2, "slab": 0, "gas": 3}
-   db.group_properties("adsorption")             # {"adsorption_energy": array([...])}
+   ads = db.groups["adsorption"]                 # list(db.groups) -> ["adsorption"]
+   len(ads), ads.roles                           # 2, ["adslab", "slab", "gas"]
+   ads.properties["adsorption_energy"]           # array([-1.23, -0.87]), no records read
 
-Groups can also be ordered lists (``[[0, 1, 2], [3, 4]]``), or a ``(n_groups, n_roles)``
+   group = ads[0]
+   group["slab"]                                 # Molecule
+   group.properties["adsorption_energy"]         # -1.23
+   group.indices                                 # {"adslab": 1, "slab": 0, "gas": 3}
+
+   ads[[0, 1]], ads[10:20]                       # batches: shared records read once
+   for group in ads:
+       ...
+
+Groups can also be ordered lists (``[[0, 1, 2], [3, 4]]``, then ``group[0]``), or a ``(n_groups, n_roles)``
 integer array with ``roles=[...]`` where ``-1`` marks an absent member. Calling ``add_groups``
 again with the same name appends to that grouping.
 
