@@ -43,6 +43,7 @@ interface Exports {
   close(source: number): void
   overview(source: number): number
   records(source: number, start: number, count: number): number
+  record_columns(source: number, start: number, count: number): number
   molecule(source: number, index: number): number
   groups(source: number, grouping: number, start: number, count: number): number
   group_columns(source: number, grouping: number): number
@@ -102,6 +103,10 @@ export class AtpReader {
     this.exports.records(this.id, start, count)
     return reply(this.exports)
   }
+  record_columns(start: number, count: number) {
+    this.exports.record_columns(this.id, start, count)
+    return reply(this.exports)
+  }
   molecule(index: number) {
     this.exports.molecule(this.id, index)
     return reply(this.exports)
@@ -125,6 +130,7 @@ export class AtpReader {
 export const READER_METHODS = [
   `overview`,
   `records`,
+  `record_columns`,
   `molecule`,
   `groups`,
   `group_columns`,

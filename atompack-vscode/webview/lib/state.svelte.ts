@@ -6,6 +6,16 @@ export const MAX_COMPARE = 12
 // Records tab position, kept across tab switches.
 export const records_view = $state({ page: 0, selected: 0, column_filter: `` })
 
+// Plots tab choices, kept across tab switches.
+export const plot_view = $state({
+  kind: `histogram` as `histogram` | `scatter`,
+  x: `energy`,
+  y: `n_atoms`,
+  log_x: false,
+  log_y: false,
+  selected: null as number | null,
+})
+
 export const compare = $state({ records: [] as number[], labels: {} as Record<number, string> })
 
 export function toggle_compare(index: number, label?: string) {

@@ -2,11 +2,12 @@
   import Compare from './lib/Compare.svelte'
   import Groups from './lib/Groups.svelte'
   import OverviewTab from './lib/OverviewTab.svelte'
+  import Plots from './lib/Plots.svelte'
   import Records from './lib/Records.svelte'
   import { api } from './lib/rpc'
   import { compare } from './lib/state.svelte'
 
-  type Tab = `overview` | `records` | `groups` | `compare`
+  type Tab = `overview` | `records` | `groups` | `plots` | `compare`
   let tab = $state<Tab>(`records`)
   const overview = api.overview()
 </script>
@@ -21,6 +22,7 @@
         [`overview`, `Overview`],
         [`records`, `Records (${info.num_records.toLocaleString()})`],
         ...(info.groupings.length ? [[`groups`, `Groups`]] : []),
+        [`plots`, `Plots`],
         [`compare`, `Compare (${compare.records.length})`],
       ] as [id, label] (id)}
         <button
@@ -39,6 +41,8 @@
         <Records total={info.num_records} />
       {:else if tab === `groups`}
         <Groups groupings={info.groupings} on_compare={() => (tab = `compare`)} />
+      {:else if tab === `plots`}
+        <Plots total={info.num_records} />
       {:else}
         <Compare />
       {/if}

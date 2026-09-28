@@ -1,6 +1,7 @@
 **
 !dist/**
 dist/reader.js
+dist/scan.js
 !package.json
 !README.md
 !LICENSE*

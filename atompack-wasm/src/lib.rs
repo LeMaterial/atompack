@@ -105,6 +105,52 @@ pub fn records<R: ReadAt>(
     Ok(Value::Array(rows))
 }
 
+/// Numeric per-record values for plotting, columnar: `{key: [value or null, ...]}`.
+/// Built-ins (`n_atoms`, `energy`, `fmax`) take precedence over same-named properties.
+pub fn record_columns<R: ReadAt>(
+    reader: &AtomReader<R>,
+    start: usize,
+    count: usize,
+) -> atompack::Result<Value> {
+    let end = start.saturating_add(count).min(reader.len());
+    let start = start.min(end);
+    let mut columns = BTreeMap::<String, Vec<Value>>::new();
+    // Decode a few records at a time: only the values are kept, and holding a whole chunk of
+    // large structures could exhaust the 4 GiB WASM memory.
+    for batch in (start..end).step_by(64) {
+        let mols = reader.get_molecules(batch..(batch + 64).min(end))?;
+        for (j, mol) in mols.iter().enumerate() {
+            let mut set = |key: &str, value: Value| {
+                columns
+                    .entry(key.to_owned())
+                    .or_insert_with(|| vec![Value::Null; end - start])[batch - start + j] = value
+            };
+            for (key, value) in &mol.properties {
+                match value {
+                    PropertyValue::Float(v) => set(key, json!(v)),
+                    PropertyValue::Int(v) => set(key, json!(v)),
+                    _ => {}
+                }
+            }
+            set("n_atoms", json!(mol.len()));
+            if let Some(energy) = &mol.energy {
+                set("energy", json!(energy.as_f64()));
+            }
+            if let Some(forces) = &mol.forces {
+                let flat = forces.flatten_f64();
+                let fmax = flat
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .map(|[x, y, z]| (x * x + y * y + z * z).sqrt())
+                    .fold(0.0, f64::max);
+                set("fmax", json!(fmax));
+            }
+        }
+    }
+    Ok(json!(columns))
+}
+
 /// Full record for rendering and inspection.
 pub fn molecule<R: ReadAt>(reader: &AtomReader<R>, index: usize) -> atompack::Result<Value> {
     Ok(molecule_json(index, &reader.get_molecule(index)?))
@@ -337,6 +383,13 @@ mod host {
     pub extern "C" fn records(source: u32, start: u32, count: u32) -> u32 {
         with_reader(source, |r| {
             super::records(r, start as usize, count as usize)
+        })
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn record_columns(source: u32, start: u32, count: u32) -> u32 {
+        with_reader(source, |r| {
+            super::record_columns(r, start as usize, count as usize)
         })
     }
 

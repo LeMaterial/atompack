@@ -1,13 +1,16 @@
 import * as vscode from 'vscode'
 import { AtpReader, bytesSource, fileSource, READER_METHODS, type ReaderMethod } from './reader'
+import { Scanner } from './scan'
 
 class AtpDocument implements vscode.CustomDocument {
   constructor(
     readonly uri: vscode.Uri,
     readonly reader: AtpReader,
+    readonly scanner: Scanner,
   ) {}
 
   dispose() {
+    this.scanner.dispose()
     this.reader.dispose()
   }
 }
@@ -17,11 +20,9 @@ class AtpEditorProvider implements vscode.CustomReadonlyEditorProvider<AtpDocume
 
   async openCustomDocument(uri: vscode.Uri): Promise<AtpDocument> {
     // Local files are read lazily by range; other schemes are loaded whole.
-    const source =
-      uri.scheme === `file`
-        ? fileSource(uri.fsPath)
-        : bytesSource(await vscode.workspace.fs.readFile(uri))
-    return new AtpDocument(uri, new AtpReader(source))
+    const file = uri.scheme === `file` ? uri.fsPath : undefined
+    const reader = new AtpReader(file ? fileSource(file) : bytesSource(await vscode.workspace.fs.readFile(uri)))
+    return new AtpDocument(uri, reader, new Scanner(file, reader))
   }
 
   resolveCustomEditor(document: AtpDocument, panel: vscode.WebviewPanel) {
@@ -29,16 +30,22 @@ class AtpEditorProvider implements vscode.CustomReadonlyEditorProvider<AtpDocume
     const dist = vscode.Uri.joinPath(this.context.extensionUri, `dist`, `webview`)
     webview.options = { enableScripts: true, localResourceRoots: [dist] }
 
-    webview.onDidReceiveMessage(({ id, method, params }) => {
+    webview.onDidReceiveMessage(async ({ id, method, params }) => {
       let reply
       try {
-        if (!READER_METHODS.includes(method)) throw new Error(`unknown method ${method}`)
-        const fn = document.reader[method as ReaderMethod] as (...args: number[]) => unknown
-        reply = { id, result: fn.apply(document.reader, params ?? []) }
+        if (method === `record_columns`) {
+          const [start, count] = params
+          reply = { id, result: await document.scanner.record_columns(start, count) }
+        } else {
+          if (!READER_METHODS.includes(method)) throw new Error(`unknown method ${method}`)
+          const fn = document.reader[method as ReaderMethod] as (...args: number[]) => unknown
+          reply = { id, result: fn.apply(document.reader, params ?? []) }
+        }
       } catch (err) {
         reply = { id, error: err instanceof Error ? err.message : String(err) }
       }
-      webview.postMessage(reply)
+      // The panel may have closed while a scan chunk was being read.
+      webview.postMessage(reply).then(undefined, () => {})
     })
 
     const nonce = Array.from({ length: 32 }, () => Math.random().toString(36)[2]).join(``)
