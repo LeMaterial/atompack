@@ -147,10 +147,7 @@ pub fn groups<R: ReadAt>(
             let range = g.member_range(i).expect("index within grouping");
             let members: Vec<Value> = range
                 .map(|m| {
-                    let role = g
-                        .member_roles
-                        .get(m)
-                        .map(|&r| g.roles[r as usize].as_str());
+                    let role = g.member_roles.get(m).map(|&r| g.roles[r as usize].as_str());
                     json!({"record": g.records[m], "role": role})
                 })
                 .collect();
@@ -196,9 +193,11 @@ fn grouping_at<R: ReadAt>(
     reader: &AtomReader<R>,
     index: usize,
 ) -> atompack::Result<&atompack::Grouping> {
-    reader.groups()?.values().nth(index).ok_or_else(|| {
-        atompack::Error::InvalidData(format!("Grouping {} out of bounds", index))
-    })
+    reader
+        .groups()?
+        .values()
+        .nth(index)
+        .ok_or_else(|| atompack::Error::InvalidData(format!("Grouping {} out of bounds", index)))
 }
 
 fn sorted(
@@ -336,7 +335,9 @@ mod host {
 
     #[unsafe(no_mangle)]
     pub extern "C" fn records(source: u32, start: u32, count: u32) -> u32 {
-        with_reader(source, |r| super::records(r, start as usize, count as usize))
+        with_reader(source, |r| {
+            super::records(r, start as usize, count as usize)
+        })
     }
 
     #[unsafe(no_mangle)]

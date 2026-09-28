@@ -13,8 +13,8 @@ pub trait ReadAt {
     fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> Result<()>;
 
     fn read_vec(&self, offset: u64, len: u64) -> Result<Vec<u8>> {
-        let len = usize::try_from(len)
-            .map_err(|_| Error::InvalidData("Read length overflow".into()))?;
+        let len =
+            usize::try_from(len).map_err(|_| Error::InvalidData("Read length overflow".into()))?;
         let mut buf = vec![0u8; len];
         self.read_exact_at(offset, &mut buf)?;
         Ok(buf)
@@ -248,7 +248,10 @@ mod tests {
         for (i, mol) in reader.get_molecules(0..6).unwrap().iter().enumerate() {
             assert_eq!(render(mol), render(&db.get_molecule(i).unwrap()));
         }
-        assert_eq!(render(&reader.get_molecule(5).unwrap()), render(&molecule(5)));
+        assert_eq!(
+            render(&reader.get_molecule(5).unwrap()),
+            render(&molecule(5))
+        );
         assert_eq!(&reader.groups().unwrap()["pairs"], groups);
         assert!(reader.get_molecule(6).is_err());
         assert!(reader.num_atoms(5..7).is_err());
@@ -285,7 +288,11 @@ mod tests {
             let mut db = AtomDatabase::open(temp.path()).unwrap();
             let file = AtomReader::open(File::open(temp.path()).unwrap()).unwrap();
             check(&file, &mut db, &groups);
-            check(&AtomReader::open(bytes.as_slice()).unwrap(), &mut db, &groups);
+            check(
+                &AtomReader::open(bytes.as_slice()).unwrap(),
+                &mut db,
+                &groups,
+            );
         }
     }
 
