@@ -159,7 +159,8 @@ The on-disk format lives in ``atompack/src/storage/`` and currently uses:
 
 1. two 4 KiB header slots
 2. a data region containing molecule records
-3. a trailing index written on ``flush()``
+3. optional sections written on ``flush()``: the schema lock and an extensions directory
+4. a trailing index written on ``flush()``
 
 Each header slot stores the format version, generation number, index location, molecule count,
 record format, codec metadata, and a checksum. On open, Atompack reads both slots and chooses the
@@ -191,6 +192,8 @@ This design gives Atompack its main operational properties:
    | - ...                                                         |
    | - record N-1                                                  |
    +---------------------------------------------------------------+
+   | Schema lock, extensions directory, groups (when present)      |
+   +---------------------------------------------------------------+
    | Trailing index                                                |
    | - count                                                       |
    | - per-record offset                                           |
@@ -201,6 +204,15 @@ This design gives Atompack its main operational properties:
 
 At commit time, Atompack writes the index first and then updates the newer valid header slot. On
 open, it reads both header slots and chooses the highest valid generation.
+
+The schema lock and the extensions directory are referenced from header bytes that older readers
+ignore, so they did not require a format version bump. The extensions directory maps tags to
+sections; readers skip tags they do not know and writers keep them.
+
+The ``groups`` extension stores named groupings of record indices in CSR form (per-group offsets,
+member record indices, optional role ids) plus one column per group property. Records are
+referenced, not copied, so a record can belong to many groups. The section is decoded on first
+access and only rewritten by ``flush()`` when groups changed.
 
 Record Shape
 ------------

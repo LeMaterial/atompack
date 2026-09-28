@@ -504,6 +504,7 @@ pub(crate) struct LazySection {
 /// Byte-offset pair for a known builtin section (payload_start, payload_len, type_tag).
 pub(crate) type BuiltinSlot = (usize, usize, u8);
 
+#[derive(Clone)]
 enum SoaBytes {
     Owned(Vec<u8>),
     Shared(SharedMmapBytes),
@@ -527,6 +528,7 @@ impl std::ops::Deref for SoaBytes {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct SoaMoleculeView {
     bytes: SoaBytes,
     pub(crate) n_atoms: usize,

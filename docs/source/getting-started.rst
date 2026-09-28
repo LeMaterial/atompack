@@ -99,6 +99,40 @@ On Linux you can also prefault mapped pages:
 
    db = atompack.Database.open("data.atp", mmap=True, populate=True)
 
+Grouped Records
+---------------
+
+Some examples span several structures, e.g. an adsorbate+slab, its clean slab, and a gas
+reference, with a label such as the adsorption energy. Store each structure once as a normal
+record, then add named groups that reference records by index. A record can belong to any number
+of groups, and one file can hold several groupings:
+
+.. code-block:: python
+
+   db = atompack.Database("adsorption.atp", overwrite=True)
+   db.add_molecules([slab, adslab_oh, adslab_o, h2o])  # records 0..3
+   db.add_groups(
+       "adsorption",
+       [{"adslab": 1, "slab": 0, "gas": 3}, {"adslab": 2, "slab": 0, "gas": 3}],
+       {"adsorption_energy": [-1.23, -0.87]},
+   )
+   db.flush()
+
+   db = atompack.Database.open("adsorption.atp")
+   group = db.get_group("adsorption", 0)
+   group["members"]["slab"]                      # Molecule
+   group["properties"]["adsorption_energy"]      # -1.23
+   db.get_groups("adsorption", [0, 1])           # batch read, shared records read once
+   db.group_members("adsorption", 1)             # {"adslab": 2, "slab": 0, "gas": 3}
+   db.group_properties("adsorption")             # {"adsorption_energy": array([...])}
+
+Groups can also be ordered lists (``[[0, 1, 2], [3, 4]]``), or a ``(n_groups, n_roles)``
+integer array with ``roles=[...]`` where ``-1`` marks an absent member. Calling ``add_groups``
+again with the same name appends to that grouping.
+
+Files with groups stay readable by older Atompack versions, which see only the records. Append to
+grouped files with Atompack 0.5 or newer: older versions drop the groups when they flush.
+
 ASE Integration
 ---------------
 

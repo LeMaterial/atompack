@@ -610,6 +610,80 @@ class Database:
         """
         ...
 
+    def add_groups(
+        self,
+        name: str,
+        members: Sequence[dict[str, int]] | Sequence[Sequence[int]] | npt.ArrayLike,
+        properties: dict[str, Sequence[int] | Sequence[float] | Sequence[str] | npt.ArrayLike]
+        | None = None,
+        *,
+        roles: Sequence[str] | None = None,
+    ) -> None:
+        """
+        Append groups of related records to the grouping ``name``.
+
+        A group references records by index, so a record can belong to any
+        number of groups and is stored only once. Call ``flush()`` to persist.
+
+        Parameters
+        ----------
+        name : str
+            Grouping name (created on first use, appended to afterwards)
+        members : list of dict or list of list or array
+            Either ``{role: index}`` dicts (named roles) or lists of indices
+            (ordered groups). With ``roles``, an integer array of shape
+            ``(n_groups, len(roles))`` where ``-1`` marks an absent member.
+        properties : dict, optional
+            One int, float, or str value per group for each key
+        roles : list of str, optional
+            Role names for the columns of an array ``members``
+
+        Examples
+        --------
+        >>> db.add_groups(
+        ...     "adsorption",
+        ...     [{"adslab": 1, "slab": 0}, {"adslab": 2, "slab": 0}],
+        ...     {"adsorption_energy": [-1.2, -0.8]},
+        ... )
+        """
+        ...
+    def group_names(self) -> list[str]:
+        """Names of the groupings stored in the database."""
+        ...
+    def num_groups(self, name: str) -> int:
+        """Number of groups in the grouping ``name``."""
+        ...
+    def group_roles(self, name: str) -> list[str]:
+        """Role names of the grouping ``name`` (empty for ordered groups)."""
+        ...
+    def group_members(self, name: str, index: int) -> dict[str, int] | list[int]:
+        """
+        Record indices of one group, without reading any molecule.
+
+        Returns ``{role: index}`` for named roles, ``[index, ...]`` otherwise.
+        """
+        ...
+    def group_properties(self, name: str) -> dict[str, npt.NDArray[Any] | list[str]]:
+        """Group properties as columns: numpy arrays for numbers, lists for str."""
+        ...
+    def get_group(self, name: str, index: int) -> dict[str, Any]:
+        """
+        Load one group.
+
+        Returns
+        -------
+        dict
+            ``{"members": ..., "properties": {...}}`` where ``members`` maps
+            role to Molecule (named roles) or is a list of Molecules.
+        """
+        ...
+    def get_groups(self, name: str, indices: list[int]) -> list[dict[str, Any]]:
+        """
+        Load several groups with parallel reads.
+
+        Records shared between the requested groups are read once.
+        """
+        ...
     def flush(self) -> None:
         """
         Flush and save the database to disk.

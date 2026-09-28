@@ -3,6 +3,8 @@ use super::*;
 mod batch;
 #[path = "database_flat.rs"]
 mod flat;
+#[path = "database_groups.rs"]
+mod groups;
 
 /// Python wrapper for AtomDatabase
 #[pyclass]
@@ -345,6 +347,85 @@ impl PyAtomDatabase {
     /// Enable indexing: db[i]
     fn __getitem__(&self, py: Python<'_>, index: usize) -> PyResult<PyMolecule> {
         self.get_molecule(py, index)
+    }
+
+    /// Append groups of related records to the grouping `name`.
+    ///
+    /// `members` is a list of dicts mapping role -> record index (named roles)
+    /// or a list of lists of record indices (ordered groups). With `roles`,
+    /// `members` is a (n_groups, n_roles) integer array where -1 marks an
+    /// absent member. `properties` maps keys to one int, float, or str value
+    /// per group. Records may belong to any number of groups. Call `flush()`
+    /// to persist.
+    #[pyo3(signature = (name, members, properties=None, *, roles=None))]
+    fn add_groups(
+        &mut self,
+        name: &str,
+        members: &Bound<'_, PyAny>,
+        properties: Option<&Bound<'_, PyDict>>,
+        roles: Option<Vec<String>>,
+    ) -> PyResult<()> {
+        let grouping = groups::parse_grouping(members, properties, roles)?;
+        self.inner
+            .add_groups(name, grouping)
+            .map_err(|e| PyValueError::new_err(format!("{}", e)))
+    }
+
+    /// Names of the groupings stored in the database.
+    fn group_names(&self) -> PyResult<Vec<String>> {
+        let groups = self
+            .inner
+            .groups()
+            .map_err(|e| PyValueError::new_err(format!("{}", e)))?;
+        Ok(groups.keys().cloned().collect())
+    }
+
+    /// Number of groups in the grouping `name`.
+    fn num_groups(&self, name: &str) -> PyResult<usize> {
+        Ok(groups::grouping(&self.inner, name)?.len())
+    }
+
+    /// Role names of the grouping `name` (empty for ordered groups).
+    fn group_roles(&self, name: &str) -> PyResult<Vec<String>> {
+        Ok(groups::grouping(&self.inner, name)?.roles.clone())
+    }
+
+    /// Record indices of one group, without reading any molecule:
+    /// {role: index} for named roles, [index, ...] for ordered groups.
+    fn group_members<'py>(
+        &self,
+        py: Python<'py>,
+        name: &str,
+        index: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let g = groups::grouping(&self.inner, name)?;
+        groups::members_object(py, g, groups::member_range(g, index)?, Ok)
+    }
+
+    /// Group properties as columns: numpy arrays for numbers, lists for str.
+    fn group_properties<'py>(&self, py: Python<'py>, name: &str) -> PyResult<Bound<'py, PyDict>> {
+        groups::property_columns(py, groups::grouping(&self.inner, name)?)
+    }
+
+    /// Load one group as {"members": ..., "properties": {...}} where members
+    /// maps role -> Molecule (named roles) or is a list of Molecules.
+    fn get_group<'py>(
+        &self,
+        py: Python<'py>,
+        name: &str,
+        index: usize,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        Ok(groups::get_groups_impl(self, py, name, vec![index])?.remove(0))
+    }
+
+    /// Load several groups (parallel reads; shared records are read once).
+    fn get_groups<'py>(
+        &self,
+        py: Python<'py>,
+        name: &str,
+        indices: Vec<usize>,
+    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        groups::get_groups_impl(self, py, name, indices)
     }
 
     /// Flush and save the database

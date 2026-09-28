@@ -17,6 +17,7 @@
 //! │ ...                                  │
 //! │ Record N-1                           │
 //! ├──────────────────────────────────────┤
+//! │ Schema, extensions (groups, ...)     │  ← written on flush when changed
 //! │ Index  [count:u64][entries...]       │  ← rewritten on flush at end of file
 //! └──────────────────────────────────────┘
 //! ```
@@ -27,18 +28,24 @@ use bytemuck::{Pod, Zeroable};
 use memmap2::Mmap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 mod dtypes;
+mod groups;
 mod header;
 mod index;
 mod schema;
 mod soa;
 
 use self::dtypes::arr;
+use self::groups::{
+    Extension, GROUPS_TAG, decode_extensions, decode_groups, encode_extensions, encode_groups,
+};
+pub use self::groups::{GroupColumn, Grouping};
 use self::header::{Header, encode_header_slot, read_best_header};
 use self::index::{IndexStorage, MoleculeIndex, decode_index, encode_index};
 use self::schema::{
@@ -184,6 +191,12 @@ pub struct AtomDatabase {
     schema_lock: Option<SchemaLock>,
     file: Option<File>,
     data_mmap: Option<Arc<Mmap>>,
+    /// Committed extensions directory and its (offset, len) in the file.
+    extensions: Vec<Extension>,
+    extensions_loc: (u64, u64),
+    /// Groupings, decoded from the "groups" extension on first access.
+    groups: OnceLock<BTreeMap<String, Grouping>>,
+    groups_dirty: bool,
 }
 
 enum AppendSchema<'a> {
@@ -217,6 +230,8 @@ impl AtomDatabase {
             schema_len: 0,
             index_offset: 0,
             index_len: 0,
+            extensions_offset: 0,
+            extensions_len: 0,
         };
         let slot = encode_header_slot(header);
         file.write_all(&slot)?;
@@ -236,6 +251,10 @@ impl AtomDatabase {
             schema_lock: None,
             file: None,
             data_mmap: None,
+            extensions: Vec::new(),
+            extensions_loc: (0, 0),
+            groups: OnceLock::new(),
+            groups_dirty: false,
         })
     }
 
@@ -344,6 +363,25 @@ impl AtomDatabase {
             None
         };
 
+        let extensions = if header.extensions_len > 0 {
+            file.seek(SeekFrom::Start(header.extensions_offset))?;
+            let mut bytes = vec![0u8; header.extensions_len as usize];
+            file.read_exact(&mut bytes)?;
+            let extensions = decode_extensions(&bytes)?;
+            for ext in &extensions {
+                let end = ext.offset.checked_add(ext.len);
+                if ext.offset < header.data_start || end.is_none_or(|end| end > committed_end) {
+                    return Err(Error::InvalidData(format!(
+                        "Extension '{}' is out of bounds",
+                        ext.tag
+                    )));
+                }
+            }
+            extensions
+        } else {
+            Vec::new()
+        };
+
         Ok(Self {
             path,
             compression: header.compression,
@@ -355,6 +393,10 @@ impl AtomDatabase {
             schema_lock,
             file: Some(file),
             data_mmap,
+            extensions,
+            extensions_loc: (header.extensions_offset, header.extensions_len),
+            groups: OnceLock::new(),
+            groups_dirty: false,
         })
     }
 
@@ -872,6 +914,22 @@ impl AtomDatabase {
         } else {
             0
         };
+        if self.groups_dirty {
+            let groups = self.groups.get().expect("dirty groups are loaded");
+            let groups_bytes = encode_groups(groups);
+            let groups_offset = file.seek(SeekFrom::End(0))?;
+            file.write_all(&groups_bytes)?;
+            self.extensions.retain(|ext| ext.tag != GROUPS_TAG);
+            self.extensions.push(Extension {
+                tag: GROUPS_TAG.to_string(),
+                offset: groups_offset,
+                len: groups_bytes.len() as u64,
+            });
+            let extensions_bytes = encode_extensions(&self.extensions);
+            let extensions_offset = file.seek(SeekFrom::End(0))?;
+            file.write_all(&extensions_bytes)?;
+            self.extensions_loc = (extensions_offset, extensions_bytes.len() as u64);
+        }
         let index_offset = file.seek(SeekFrom::End(0))?;
         file.write_all(&index_bytes)?;
         file.flush()?;
@@ -889,6 +947,8 @@ impl AtomDatabase {
             schema_len,
             index_offset,
             index_len: index_bytes.len() as u64,
+            extensions_offset: self.extensions_loc.0,
+            extensions_len: self.extensions_loc.1,
         };
 
         let slot_offset = if new_generation.is_multiple_of(2) {
@@ -907,7 +967,54 @@ impl AtomDatabase {
             .checked_add(index_bytes.len() as u64)
             .ok_or_else(|| Error::InvalidData("Index end overflow".into()))?;
         self.truncate_tail_on_next_write = false;
+        self.groups_dirty = false;
         Ok(())
+    }
+
+    // -- Groups --------------------------------------------------------------
+
+    /// All groupings by name. Decoded from the file on first access.
+    pub fn groups(&self) -> Result<&BTreeMap<String, Grouping>> {
+        if let Some(groups) = self.groups.get() {
+            return Ok(groups);
+        }
+        let groups = match self.extensions.iter().find(|ext| ext.tag == GROUPS_TAG) {
+            Some(ext) => decode_groups(&self.read_committed(ext.offset, ext.len)?, self.len())?,
+            None => BTreeMap::new(),
+        };
+        Ok(self.groups.get_or_init(|| groups))
+    }
+
+    /// Append groups to the grouping `name`, creating it if needed. Members
+    /// must reference existing records. Persisted on the next `flush`.
+    pub fn add_groups(&mut self, name: &str, groups: Grouping) -> Result<()> {
+        self.ensure_writable_for_append()?;
+        groups.validate(self.len())?;
+        self.groups()?;
+        let all = self.groups.get_mut().expect("groups are loaded");
+        match all.get_mut(name) {
+            Some(existing) => existing.append(groups)?,
+            None => {
+                all.insert(name.to_string(), groups);
+            }
+        }
+        self.groups_dirty = true;
+        Ok(())
+    }
+
+    fn read_committed(&self, offset: u64, len: u64) -> Result<Vec<u8>> {
+        if let Some(mmap) = &self.data_mmap {
+            let range = offset as usize..(offset + len) as usize;
+            return mmap
+                .get(range)
+                .map(<[u8]>::to_vec)
+                .ok_or_else(|| Error::InvalidData("Section out of bounds".into()));
+        }
+        let mut file = File::open(&self.path)?;
+        file.seek(SeekFrom::Start(offset))?;
+        let mut bytes = vec![0u8; len as usize];
+        file.read_exact(&mut bytes)?;
+        Ok(bytes)
     }
 
     // -- Accessors -----------------------------------------------------------
@@ -1093,6 +1200,8 @@ mod tests {
             schema_len: 0,
             index_offset: 0,
             index_len: 0,
+            extensions_offset: 0,
+            extensions_len: 0,
         };
         let slot = encode_legacy_v2_header_slot(header);
         let mut file = File::create(&path).unwrap();
