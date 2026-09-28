@@ -1,8 +1,10 @@
-//! Extensions directory and the sections it references (grouped records).
+//! Metadata frames other than records and schema (grouped records, ...).
 //!
 //! A group references related records (e.g. adsorbate+slab, slab, gas) by
 //! index; records are stored once and may belong to any number of groups.
-//! Groups live in named groupings, stored in one "groups" extension blob:
+//! Each `add_groups` call is written immediately as one groups frame (a
+//! chunk); a grouping is the concatenation of its chunks in file order.
+//! Chunk payload:
 //!
 //! ```text
 //! [version:u32][n_groupings:u32]
@@ -16,49 +18,37 @@
 //! str = [len:u32][utf8 bytes]
 //! ```
 //!
-//! The extensions directory (`[version:u32][count:u32]` then
-//! `[tag:str][offset:u64][len:u64]` per entry) is referenced from the header.
-//! Readers skip tags they do not know and writers keep them, so new sections
-//! can be added without a file format bump.
+//! `flush` writes a directory of these frames (`[version:u32][count:u32]`,
+//! then `[kind:u32][offset:u64][len:u64]` per frame), referenced from the
+//! header. Frames of unknown kinds are listed and kept, so newer sections
+//! survive older writers.
 
+use super::frames::{FRAME_GROUPS, MetaFrame};
 use super::*;
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
-const GROUPS_TAG: &str = "groups";
-const EXTENSIONS_VERSION: u32 = 1;
+const DIRECTORY_VERSION: u32 = 1;
 const GROUPS_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Extension {
-    tag: String,
-    offset: u64,
-    len: u64,
-}
-
-/// Optional sections referenced from the header through the extensions
-/// directory. Sections are decoded on first access and only rewritten by
-/// `flush` when they changed.
+/// Metadata frames in file order, and the groupings decoded from them on
+/// first access.
 #[derive(Debug, Default)]
 pub(super) struct Extensions {
-    /// Committed directory entries.
-    directory: Vec<Extension>,
-    /// (offset, len) of the committed directory, written into the header.
-    directory_span: (u64, u64),
+    frames: Vec<MetaFrame>,
     groups: OnceLock<BTreeMap<String, Grouping>>,
-    /// Groups changed since the last flush.
-    groups_dirty: bool,
 }
 
 impl Extensions {
-    /// Read the directory at `span` and check every section lies in
-    /// `data_start..committed_end`.
-    pub(super) fn open(
-        file: &mut File,
-        span: (u64, u64),
-        data_start: u64,
-        committed_end: u64,
-    ) -> Result<Self> {
+    pub(super) fn from_frames(frames: Vec<MetaFrame>) -> Self {
+        Self {
+            frames,
+            ..Self::default()
+        }
+    }
+
+    /// Read the directory at `span`; every listed frame must lie before it.
+    pub(super) fn open(file: &mut File, span: (u64, u64), data_start: u64) -> Result<Self> {
         let (offset, len) = span;
         if len == 0 {
             return Ok(Self::default());
@@ -66,84 +56,91 @@ impl Extensions {
         file.seek(SeekFrom::Start(offset))?;
         let mut bytes = vec![0u8; len as usize];
         file.read_exact(&mut bytes)?;
-        let directory = decode_extensions(&bytes)?;
-        for ext in &directory {
-            let end = ext.offset.checked_add(ext.len);
-            if ext.offset < data_start || end.is_none_or(|end| end > committed_end) {
+        let frames = decode_directory(&bytes)?;
+        for frame in &frames {
+            let end = frame.offset.checked_add(frame.len);
+            if frame.offset < data_start || end.is_none_or(|end| end > offset) {
                 return Err(Error::InvalidData(format!(
-                    "Extension '{}' is out of bounds",
-                    ext.tag
+                    "Metadata frame of kind {} is out of bounds",
+                    frame.kind
                 )));
             }
         }
-        Ok(Self {
-            directory,
-            directory_span: span,
-            ..Self::default()
-        })
+        Ok(Self::from_frames(frames))
     }
 
-    /// All groupings; `read(offset, len)` loads the section on first access.
+    /// The directory `flush` writes, or `None` when there are no frames.
+    pub(super) fn encode_directory(&self) -> Option<Vec<u8>> {
+        if self.frames.is_empty() {
+            return None;
+        }
+        let mut buf = Vec::with_capacity(8 + self.frames.len() * 20);
+        buf.extend_from_slice(&DIRECTORY_VERSION.to_le_bytes());
+        buf.extend_from_slice(&(self.frames.len() as u32).to_le_bytes());
+        for frame in &self.frames {
+            buf.extend_from_slice(&frame.kind.to_le_bytes());
+            buf.extend_from_slice(&frame.offset.to_le_bytes());
+            buf.extend_from_slice(&frame.len.to_le_bytes());
+        }
+        Some(buf)
+    }
+
+    /// All groupings; `read(offset, len)` loads each chunk on first access.
     pub(super) fn groups(
         &self,
         num_records: usize,
-        read: impl FnOnce(u64, u64) -> Result<Vec<u8>>,
+        read: impl Fn(u64, u64) -> Result<Vec<u8>>,
     ) -> Result<&BTreeMap<String, Grouping>> {
         if let Some(groups) = self.groups.get() {
             return Ok(groups);
         }
-        let groups = match self.directory.iter().find(|ext| ext.tag == GROUPS_TAG) {
-            Some(ext) => decode_groups(&read(ext.offset, ext.len)?, num_records)?,
-            None => BTreeMap::new(),
-        };
+        let mut groups = BTreeMap::new();
+        for frame in self.frames.iter().filter(|f| f.kind == FRAME_GROUPS) {
+            for (name, chunk) in decode_groups(&read(frame.offset, frame.len)?, num_records)? {
+                merge_grouping(&mut groups, name, chunk)?;
+            }
+        }
         Ok(self.groups.get_or_init(|| groups))
     }
 
-    pub(super) fn add_groups(
-        &mut self,
+    /// Check `groups` can be added to the grouping `name` and encode them as
+    /// a chunk. Pass the written chunk to `push_groups` afterwards.
+    pub(super) fn encode_groups_chunk(
+        &self,
         name: &str,
-        groups: Grouping,
+        groups: &Grouping,
         num_records: usize,
-        read: impl FnOnce(u64, u64) -> Result<Vec<u8>>,
-    ) -> Result<()> {
+        read: impl Fn(u64, u64) -> Result<Vec<u8>>,
+    ) -> Result<Vec<u8>> {
         groups.validate(num_records)?;
-        self.groups(num_records, read)?;
-        let all = self.groups.get_mut().expect("groups were just loaded");
-        match all.get_mut(name) {
-            Some(existing) => existing.append(groups)?,
-            None => {
-                all.insert(name.to_string(), groups);
-            }
+        if let Some(existing) = self.groups(num_records, read)?.get(name) {
+            existing.check_append(groups)?;
         }
-        self.groups_dirty = true;
-        Ok(())
+        Ok(encode_groups(&[(name, groups)]))
     }
 
-    /// Append changed sections and a new directory to `file`. Returns the
-    /// directory span for the header; unchanged sections are reused as is.
-    pub(super) fn write_changed(&mut self, file: &mut File) -> Result<(u64, u64)> {
-        if self.groups_dirty {
-            let groups = self.groups.get().expect("changed groups are loaded");
-            let groups_bytes = encode_groups(groups);
-            let groups_offset = file.seek(SeekFrom::End(0))?;
-            file.write_all(&groups_bytes)?;
-            self.directory.retain(|ext| ext.tag != GROUPS_TAG);
-            self.directory.push(Extension {
-                tag: GROUPS_TAG.to_string(),
-                offset: groups_offset,
-                len: groups_bytes.len() as u64,
-            });
-            let directory_bytes = encode_extensions(&self.directory);
-            let directory_offset = file.seek(SeekFrom::End(0))?;
-            file.write_all(&directory_bytes)?;
-            self.directory_span = (directory_offset, directory_bytes.len() as u64);
-        }
-        Ok(self.directory_span)
+    /// Record a chunk written for `encode_groups_chunk`.
+    pub(super) fn push_groups(&mut self, name: &str, groups: Grouping, frame: MetaFrame) {
+        self.frames.push(frame);
+        let all = self
+            .groups
+            .get_mut()
+            .expect("loaded by encode_groups_chunk");
+        merge_grouping(all, name.to_string(), groups).expect("checked by encode_groups_chunk");
     }
+}
 
-    /// Call once the header referencing `write_changed`'s output is on disk.
-    pub(super) fn mark_flushed(&mut self) {
-        self.groups_dirty = false;
+fn merge_grouping(
+    groups: &mut BTreeMap<String, Grouping>,
+    name: String,
+    chunk: Grouping,
+) -> Result<()> {
+    match groups.get_mut(&name) {
+        Some(existing) => existing.append(chunk),
+        None => {
+            groups.insert(name, chunk);
+            Ok(())
+        }
     }
 }
 
@@ -288,8 +285,9 @@ impl Grouping {
         Ok(())
     }
 
-    /// Append validated groups. Nothing is modified if they are incompatible.
-    pub(super) fn append(&mut self, mut other: Grouping) -> Result<()> {
+    /// Check `other` can be appended: same kind of groups, same property
+    /// keys and types, and room for its new roles.
+    pub(super) fn check_append(&self, other: &Grouping) -> Result<()> {
         if self.roles.is_empty() != other.roles.is_empty() {
             return Err(Error::InvalidData(
                 "Cannot mix named-role and ordered groups in one grouping".into(),
@@ -313,23 +311,31 @@ impl Grouping {
                 new_keys, own_keys
             )));
         }
-
-        let mut roles = self.roles.clone();
-        let mut role_map = Vec::with_capacity(other.roles.len());
-        for role in &other.roles {
-            let id = match roles.iter().position(|r| r == role) {
-                Some(id) => id,
-                None => {
-                    roles.push(role.clone());
-                    roles.len() - 1
-                }
-            };
-            role_map.push(
-                u16::try_from(id).map_err(|_| Error::InvalidData("Too many group roles".into()))?,
-            );
+        let new_roles = other
+            .roles
+            .iter()
+            .filter(|r| !self.roles.contains(r))
+            .count();
+        if self.roles.len() + new_roles > u16::MAX as usize {
+            return Err(Error::InvalidData("Too many group roles".into()));
         }
+        Ok(())
+    }
 
-        self.roles = roles;
+    /// Append validated groups. Nothing is modified if they are incompatible.
+    pub(super) fn append(&mut self, mut other: Grouping) -> Result<()> {
+        self.check_append(&other)?;
+        let role_map: Vec<u16> = other
+            .roles
+            .iter()
+            .map(|role| match self.roles.iter().position(|r| r == role) {
+                Some(id) => id as u16,
+                None => {
+                    self.roles.push(role.clone());
+                    (self.roles.len() - 1) as u16
+                }
+            })
+            .collect();
         self.member_roles
             .extend(other.member_roles.iter().map(|&r| role_map[r as usize]));
         let base = self.records.len() as u64;
@@ -363,23 +369,11 @@ fn put_str(buf: &mut Vec<u8>, s: &str) {
     buf.extend_from_slice(s.as_bytes());
 }
 
-fn encode_extensions(entries: &[Extension]) -> Vec<u8> {
-    let mut buf = Vec::new();
-    buf.extend_from_slice(&EXTENSIONS_VERSION.to_le_bytes());
-    buf.extend_from_slice(&(entries.len() as u32).to_le_bytes());
-    for entry in entries {
-        put_str(&mut buf, &entry.tag);
-        buf.extend_from_slice(&entry.offset.to_le_bytes());
-        buf.extend_from_slice(&entry.len.to_le_bytes());
-    }
-    buf
-}
-
-fn encode_groups(groups: &BTreeMap<String, Grouping>) -> Vec<u8> {
+fn encode_groups(groups: &[(&str, &Grouping)]) -> Vec<u8> {
     let mut buf = Vec::new();
     buf.extend_from_slice(&GROUPS_VERSION.to_le_bytes());
     buf.extend_from_slice(&(groups.len() as u32).to_le_bytes());
-    for (name, g) in groups {
+    for &(name, g) in groups {
         put_str(&mut buf, name);
         buf.extend_from_slice(&(g.roles.len() as u32).to_le_bytes());
         for role in &g.roles {
@@ -482,31 +476,30 @@ impl<'a> Reader<'a> {
     }
 }
 
-fn decode_extensions(bytes: &[u8]) -> Result<Vec<Extension>> {
+fn decode_directory(bytes: &[u8]) -> Result<Vec<MetaFrame>> {
     let mut r = Reader {
         bytes,
         pos: 0,
-        what: "Extensions directory",
+        what: "Metadata directory",
     };
     let version = r.u32()?;
-    if version != EXTENSIONS_VERSION {
+    if version != DIRECTORY_VERSION {
         return Err(Error::InvalidData(format!(
-            "Unsupported extensions directory version {}",
+            "Unsupported metadata directory version {}",
             version
         )));
     }
     let count = r.u32()?;
-    let mut entries = Vec::new();
+    let mut frames = Vec::new();
     for _ in 0..count {
-        entries.push(Extension {
-            tag: r.str()?,
+        frames.push(MetaFrame {
+            kind: r.u32()?,
             offset: r.u64()?,
             len: r.u64()?,
         });
     }
     r.finish()?;
-    check_unique(entries.iter().map(|e| &e.tag), "extension")?;
-    Ok(entries)
+    Ok(frames)
 }
 
 fn decode_groups(bytes: &[u8], num_records: usize) -> Result<BTreeMap<String, Grouping>> {
@@ -716,21 +709,21 @@ mod tests {
     }
 
     #[test]
-    fn unknown_extensions_are_preserved() {
+    fn unknown_metadata_frames_survive_flush_and_recovery() {
         let temp = NamedTempFile::new().unwrap();
         let mut db = db_with_records(temp.path(), 4);
-        db.flush().unwrap();
-        let future = Extension {
-            tag: "future".into(),
-            offset: HEADER_REGION_SIZE,
-            len: 1,
-        };
-        db.extensions.directory.push(future.clone());
-        db.add_groups("ordered", ordered()).unwrap();
+        let future = db
+            .write_metadata_frame(99, b"from a newer version")
+            .unwrap();
+        db.extensions.frames.push(future);
         db.flush().unwrap();
 
+        let mut db = AtomDatabase::open(temp.path()).unwrap();
+        assert!(db.extensions.frames.contains(&future));
+        db.add_groups("ordered", ordered()).unwrap(); // session left open (crash)
+
         let db = AtomDatabase::open(temp.path()).unwrap();
-        assert!(db.extensions.directory.contains(&future));
+        assert!(db.extensions.frames.contains(&future));
         assert_eq!(db.groups().unwrap()["ordered"], ordered());
     }
 
@@ -740,7 +733,7 @@ mod tests {
             ("a".to_string(), adsorption()),
             ("o".to_string(), ordered()),
         ]);
-        let bytes = encode_groups(&groups);
+        let bytes = encode_groups(&[("a", &adsorption()), ("o", &ordered())]);
         assert_eq!(decode_groups(&bytes, 4).unwrap(), groups);
         assert!(decode_groups(&bytes, 3).is_err()); // records must exist
         for cut in 0..bytes.len() {
@@ -752,13 +745,17 @@ mod tests {
         huge[n_groups_at..][..8].copy_from_slice(&u64::MAX.to_le_bytes());
         assert!(decode_groups(&huge, 4).is_err());
 
-        let dir = encode_extensions(&[Extension {
-            tag: "groups".into(),
+        let frame = MetaFrame {
+            kind: FRAME_GROUPS,
             offset: 9,
             len: 3,
-        }]);
+        };
+        let dir = Extensions::from_frames(vec![frame])
+            .encode_directory()
+            .unwrap();
+        assert_eq!(decode_directory(&dir).unwrap(), [frame]);
         for cut in 0..dir.len() {
-            assert!(decode_extensions(&dir[..cut]).is_err());
+            assert!(decode_directory(&dir[..cut]).is_err());
         }
     }
 }

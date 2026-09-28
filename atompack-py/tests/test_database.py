@@ -1026,3 +1026,28 @@ def test_database_empty_molecule_roundtrip(tmp_path: Path) -> None:
     assert read.positions.shape == (0, 3)
     assert read.atomic_numbers.shape == (0,)
     assert read.energy == pytest.approx(0.0)
+
+
+def test_unflushed_records_are_recovered_on_open(tmp_path: Path) -> None:
+    path = tmp_path / "crash.atp"
+    db = atompack.Database(str(path))
+    db.add_molecules([_make_molecule(-1.0), _make_molecule(-2.0)])
+    db.flush()
+    db.add_molecule(_make_molecule(-3.0))
+    del db  # no flush, as after a crash
+
+    db = atompack.Database.open(str(path))
+    assert [db[i].energy for i in range(len(db))] == [-1.0, -2.0, -3.0]
+
+
+def test_frequent_flushes_do_not_grow_the_file(tmp_path: Path) -> None:
+    def build(path: Path, flush_every: int) -> int:
+        db = atompack.Database(str(path), compression="zstd")
+        for i in range(40):
+            db.add_molecule(_make_molecule(float(i)))
+            if (i + 1) % flush_every == 0:
+                db.flush()
+        db.flush()
+        return path.stat().st_size
+
+    assert build(tmp_path / "often.atp", 1) == build(tmp_path / "once.atp", 40)

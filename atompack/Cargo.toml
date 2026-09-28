@@ -12,6 +12,7 @@ bytemuck.workspace = true
 memmap2.workspace = true
 rayon.workspace = true
 thiserror.workspace = true
+crc32fast.workspace = true
 zstd.workspace = true
 lz4.workspace = true
 serde.workspace = true
