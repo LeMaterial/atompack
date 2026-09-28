@@ -1,0 +1,6 @@
+**
+!dist/**
+dist/reader.js
+!package.json
+!README.md
+!LICENSE*

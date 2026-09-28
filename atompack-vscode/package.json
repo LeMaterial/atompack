@@ -1,0 +1,59 @@
+{
+  "name": "atompack-vscode",
+  "displayName": "Atompack Viewer",
+  "description": "Browse and visualize atompack (.atp) databases",
+  "version": "0.1.0",
+  "publisher": "atompack",
+  "license": "Apache-2.0",
+  "private": true,
+  "engines": {
+    "vscode": "^1.93.0"
+  },
+  "categories": [
+    "Visualization"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "atompack.viewer",
+        "displayName": "Atompack Viewer",
+        "selector": [
+          {
+            "filenamePattern": "*.atp"
+          }
+        ],
+        "priority": "default"
+      }
+    ]
+  },
+  "scripts": {
+    "build:wasm": "cargo build -p atompack-wasm --target wasm32-unknown-unknown --release && mkdir -p dist && cp ../target/wasm32-unknown-unknown/release/atompack_wasm.wasm dist/atompack.wasm",
+    "build:ext": "esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js",
+    "build:webview": "vite build",
+    "build": "npm run build:wasm && npm run build:ext && npm run build:webview",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "test": "esbuild src/reader.ts --bundle --platform=node --format=cjs --outfile=dist/reader.js --log-level=warning && node --test test/*.test.mjs",
+    "package": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^22.20.4",
+    "@types/vscode": "~1.93.0",
+    "@vscode/vsce": "^4.0.0",
+    "esbuild": "^0.28.2",
+    "matterviz": "0.7.0",
+    "svelte": "5.57.1",
+    "svelte-check": "^4.7.6",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^6.0.3",
+    "vite": "^8.3.1"
+  },
+  "overrides": {
+    "svelte-widgets": "1.6.1"
+  }
+}
