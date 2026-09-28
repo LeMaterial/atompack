@@ -352,8 +352,10 @@ impl<'a> Reader<'a> {
             .ok_or_else(|| Error::InvalidData(format!("{} count overflow", self.what)))?;
         Ok(self
             .take(len)?
-            .chunks_exact(N)
-            .map(|c| from(c.try_into().unwrap()))
+            .as_chunks::<N>()
+            .0
+            .iter()
+            .map(|&c| from(c))
             .collect())
     }
 
