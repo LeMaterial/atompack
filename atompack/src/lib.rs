@@ -15,7 +15,7 @@ pub mod types;
 
 pub use atom::{Atom, Molecule};
 pub use compression::decompress as decompress_bytes;
-pub use storage::{AtomDatabase, GroupColumn, Grouping, SharedMmapBytes};
+pub use storage::{AtomDatabase, AtomReader, GroupColumn, Grouping, ReadAt, SharedMmapBytes};
 pub use types::{FloatArrayData, FloatScalarData, Mat3Data, PropertyValue, Vec3Data};
 
 /// Result type used throughout atompack

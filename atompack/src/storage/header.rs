@@ -154,15 +154,12 @@ fn decode_header_slot(slot: &[u8; HEADER_SLOT_SIZE], file_size: u64) -> Option<H
     })
 }
 
-pub(super) fn read_best_header(file: &mut File) -> Result<Header> {
-    let file_size = file.metadata()?.len();
-    file.seek(SeekFrom::Start(HEADER_SLOT_A_OFFSET))?;
+pub(super) fn read_best_header(src: &(impl ReadAt + ?Sized)) -> Result<Header> {
+    let file_size = src.size()?;
     let mut slot_a = [0u8; HEADER_SLOT_SIZE];
-    file.read_exact(&mut slot_a)?;
-
-    file.seek(SeekFrom::Start(HEADER_SLOT_B_OFFSET))?;
+    src.read_exact_at(HEADER_SLOT_A_OFFSET, &mut slot_a)?;
     let mut slot_b = [0u8; HEADER_SLOT_SIZE];
-    file.read_exact(&mut slot_b)?;
+    src.read_exact_at(HEADER_SLOT_B_OFFSET, &mut slot_b)?;
 
     let a = decode_header_slot(&slot_a, file_size);
     let b = decode_header_slot(&slot_b, file_size);

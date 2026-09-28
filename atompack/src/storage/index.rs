@@ -35,23 +35,17 @@ pub(super) fn decode_index(bytes: &[u8]) -> Result<Vec<MoleculeIndex>> {
         )));
     }
 
-    let mut entries = Vec::with_capacity(count);
-    let mut pos = INDEX_PREFIX_SIZE;
-    for _ in 0..count {
-        let offset = u64::from_le_bytes(arr(&bytes[pos..pos + 8])?);
-        let compressed_size = u32::from_le_bytes(arr(&bytes[pos + 8..pos + 12])?);
-        let uncompressed_size = u32::from_le_bytes(arr(&bytes[pos + 12..pos + 16])?);
-        let num_atoms = u32::from_le_bytes(arr(&bytes[pos + 16..pos + 20])?);
-        entries.push(MoleculeIndex {
-            offset,
-            compressed_size,
-            uncompressed_size,
-            num_atoms,
-        });
-        pos += INDEX_ENTRY_SIZE;
-    }
+    Ok(decode_index_entries(&bytes[INDEX_PREFIX_SIZE..]))
+}
 
-    Ok(entries)
+/// Decode consecutive index entries (no count prefix).
+pub(super) fn decode_index_entries(bytes: &[u8]) -> Vec<MoleculeIndex> {
+    bytes
+        .as_chunks::<INDEX_ENTRY_SIZE>()
+        .0
+        .iter()
+        .map(MoleculeIndex::from_le_bytes)
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Pod, Zeroable)]
@@ -61,6 +55,18 @@ pub(super) struct MoleculeIndex {
     pub(super) compressed_size: u32,
     pub(super) uncompressed_size: u32,
     pub(super) num_atoms: u32,
+}
+
+impl MoleculeIndex {
+    fn from_le_bytes(b: &[u8; INDEX_ENTRY_SIZE]) -> Self {
+        let u32_at = |i: usize| u32::from_le_bytes(b[i..i + 4].try_into().unwrap());
+        Self {
+            offset: u64::from_le_bytes(b[0..8].try_into().unwrap()),
+            compressed_size: u32_at(8),
+            uncompressed_size: u32_at(12),
+            num_atoms: u32_at(16),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -104,17 +110,7 @@ impl IndexStorage {
                 }
 
                 let entry_bytes = &mmap[entry_offset..entry_offset + INDEX_ENTRY_SIZE];
-                let offset = u64::from_le_bytes(entry_bytes[0..8].try_into().ok()?);
-                let compressed_size = u32::from_le_bytes(entry_bytes[8..12].try_into().ok()?);
-                let uncompressed_size = u32::from_le_bytes(entry_bytes[12..16].try_into().ok()?);
-                let num_atoms = u32::from_le_bytes(entry_bytes[16..20].try_into().ok()?);
-
-                Some(MoleculeIndex {
-                    offset,
-                    compressed_size,
-                    uncompressed_size,
-                    num_atoms,
-                })
+                Some(MoleculeIndex::from_le_bytes(entry_bytes.try_into().ok()?))
             }
         }
     }
