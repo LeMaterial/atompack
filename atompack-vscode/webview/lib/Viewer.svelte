@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { Structure } from 'matterviz/structure'
+  import type { Vec3 } from 'matterviz/math'
+  import { type AnyStructure, get_center_of_mass, Structure } from 'matterviz/structure'
   import type { Snippet } from 'svelte'
   import { composition, fmt, formula, to_structure } from './chem'
   import { api } from './rpc'
@@ -18,10 +19,22 @@
     header?: Snippet
   } = $props()
 
+  const Z_UP: Vec3 = [-Math.PI / 2, 0, 0]
+
   const mol = $derived(api.molecule(index))
-  const scene_props = $derived(
-    camera?.position ? { camera_position: camera.position, camera_target: camera.target } : {},
-  )
+  // three.js draws y up; turn the structure -90° about x, (x, y, z) -> (x, z, -y), so z is up.
+  // MatterViz turns molecules about their center of mass but aims the camera at their
+  // bounding-box center, so aim at where the turn moves that center instead.
+  function scene_props(structure: AnyStructure) {
+    if (camera?.position) return { rotation: Z_UP, camera_position: camera.position, camera_target: camera.target }
+    if (`lattice` in structure || !structure.sites.length) return { rotation: Z_UP }
+    const [lo, hi] = [[Infinity, Infinity, Infinity], [-Infinity, -Infinity, -Infinity]]
+    for (const { xyz } of structure.sites)
+      for (const a of [0, 1, 2]) [lo[a], hi[a]] = [Math.min(lo[a], xyz[a]), Math.max(hi[a], xyz[a])]
+    const com = get_center_of_mass(structure)
+    const [dx, dy, dz] = [0, 1, 2].map((a) => (lo[a] + hi[a]) / 2 - com[a])
+    return { rotation: Z_UP, camera_target: [com[0] + dx, com[1] + dz, com[2] - dy] as Vec3 }
+  }
 </script>
 
 <div class="flex h-full min-h-0 flex-col overflow-hidden rounded border border-line">
@@ -38,9 +51,10 @@
     {#await mol}
       <p class="p-4 text-muted">Loading #{index}…</p>
     {:then m}
+      {@const structure = to_structure(m)}
       <Structure
-        structure={to_structure(m)}
-        {scene_props}
+        {structure}
+        scene_props={scene_props(structure)}
         show_controls={{ mode: `hover`, hidden: [`multi-view`] }}
         enable_info_pane={false}
         allow_file_drop={false}
