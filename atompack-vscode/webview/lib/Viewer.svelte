@@ -4,7 +4,7 @@
   import type { Snippet } from 'svelte'
   import { composition, fmt, formula, to_structure } from './chem'
   import { api } from './rpc'
-  import type { CameraPose } from './state.svelte'
+  import { type CameraPose, viewer_settings } from './state.svelte'
 
   let {
     index,
@@ -20,20 +20,28 @@
   } = $props()
 
   const Z_UP: Vec3 = [-Math.PI / 2, 0, 0]
+  // MatterViz sizes the longest arrow to ~1.35 atom spacings, which hides the structure of
+  // molecules with large forces; keep them short and thin.
+  const ARROWS = { vector_scale: 0.35, vector_shaft_radius: -0.006, vector_arrow_head_radius: -0.02, vector_arrow_head_length: -0.05 }
 
   const mol = $derived(api.molecule(index))
   // three.js draws y up; turn the structure -90° about x, (x, y, z) -> (x, z, -y), so z is up.
   // MatterViz turns molecules about their center of mass but aims the camera at their
   // bounding-box center, so aim at where the turn moves that center instead.
   function scene_props(structure: AnyStructure) {
-    if (camera?.position) return { rotation: Z_UP, camera_position: camera.position, camera_target: camera.target }
-    if (`lattice` in structure || !structure.sites.length) return { rotation: Z_UP }
+    const base = {
+      ...ARROWS,
+      rotation: Z_UP,
+      vector_configs: { force: { visible: viewer_settings.forces, color: null, scale: null } },
+    }
+    if (camera?.position) return { ...base, camera_position: camera.position, camera_target: camera.target }
+    if (`lattice` in structure || !structure.sites.length) return base
     const [lo, hi] = [[Infinity, Infinity, Infinity], [-Infinity, -Infinity, -Infinity]]
     for (const { xyz } of structure.sites)
       for (const a of [0, 1, 2]) [lo[a], hi[a]] = [Math.min(lo[a], xyz[a]), Math.max(hi[a], xyz[a])]
     const com = get_center_of_mass(structure)
     const [dx, dy, dz] = [0, 1, 2].map((a) => (lo[a] + hi[a]) / 2 - com[a])
-    return { rotation: Z_UP, camera_target: [com[0] + dx, com[1] + dz, com[2] - dy] as Vec3 }
+    return { ...base, camera_target: [com[0] + dx, com[1] + dz, com[2] - dy] as Vec3 }
   }
 </script>
 
@@ -44,6 +52,11 @@
     {#await mol then m}
       <span class="truncate" title={m.name ?? ``}>{formula(composition(m.numbers))}</span>
       {#if m.energy !== null}<span class="shrink-0 text-muted">E = {fmt(m.energy)}</span>{/if}
+      {#if m.forces}
+        <label class="flex shrink-0 items-center gap-1 text-muted" title="Show force arrows">
+          <input type="checkbox" bind:checked={viewer_settings.forces} />forces
+        </label>
+      {/if}
     {/await}
     <span class="ml-auto flex gap-1">{@render header?.()}</span>
   </div>

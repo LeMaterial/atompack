@@ -14,9 +14,10 @@ test(`worker chunks match the reader`, async () => {
   try {
     const chunks = await Promise.all([0, 2, 4, 6].map((start) => scanner.record_columns(start, 2)))
     chunks.forEach((chunk, i) => assert.deepEqual(chunk, to_binary(reader.record_columns(2 * i, 2))))
-    assert.deepEqual(chunks[3], { count: 0, columns: {} })
+    assert.deepEqual(chunks[3], { count: 0, columns: {}, compositions: { keys: [], codes: new Int32Array() } })
     assert.ok(chunks[0].columns.energy instanceof Float32Array)
     assert.deepEqual([...chunks[2].columns.energy], [-4, -5])
+    assert.deepEqual(chunks[2].compositions, { keys: [`7:5`, `8:6`], codes: Int32Array.of(0, 1) })
   } finally {
     scanner.dispose()
     reader.dispose()

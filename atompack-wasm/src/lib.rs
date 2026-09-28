@@ -106,7 +106,8 @@ pub fn records<R: ReadAt>(
 }
 
 /// Numeric per-record values for plotting, columnar: `{key: [value or null, ...]}`.
-/// Built-ins (`n_atoms`, `energy`, `fmax`) take precedence over same-named properties.
+/// Built-ins (`n_atoms`, `energy`, `energy_per_atom`, `fmax`) take precedence over same-named
+/// properties. `composition` holds `"Z:count"` pairs by atomic number, e.g. `"1:2 8:1"`.
 pub fn record_columns<R: ReadAt>(
     reader: &AtomReader<R>,
     start: usize,
@@ -135,7 +136,19 @@ pub fn record_columns<R: ReadAt>(
             set("n_atoms", json!(mol.len()));
             if let Some(energy) = &mol.energy {
                 set("energy", json!(energy.as_f64()));
+                if mol.len() > 0 {
+                    set("energy_per_atom", json!(energy.as_f64() / mol.len() as f64));
+                }
             }
+            let mut composition = BTreeMap::<u8, usize>::new();
+            for &z in &mol.atomic_numbers {
+                *composition.entry(z).or_default() += 1;
+            }
+            let key: Vec<String> = composition
+                .iter()
+                .map(|(z, n)| format!("{z}:{n}"))
+                .collect();
+            set("composition", json!(key.join(" ")));
             if let Some(forces) = &mol.forces {
                 let flat = forces.flatten_f64();
                 let fmax = flat

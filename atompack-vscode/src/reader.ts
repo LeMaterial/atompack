@@ -103,6 +103,10 @@ export class AtpReader {
     this.exports.records(this.id, start, count)
     return reply(this.exports)
   }
+  /** Records at the given indices, e.g. a sorted page: one message instead of one per row. */
+  records_at(...indices: number[]) {
+    return indices.map((index) => (this.records(index, 1) as unknown[])[0])
+  }
   record_columns(start: number, count: number) {
     this.exports.record_columns(this.id, start, count)
     return reply(this.exports)
@@ -130,6 +134,7 @@ export class AtpReader {
 export const READER_METHODS = [
   `overview`,
   `records`,
+  `records_at`,
   `record_columns`,
   `molecule`,
   `groups`,

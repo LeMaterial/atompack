@@ -48,8 +48,12 @@ export type GroupRow = {
   properties: Record<string, Scalar>
 }
 export type Columns = Record<string, Scalar[]>
-// Float32, NaN where a record has no value.
-export type NumericColumns = { count: number; columns: Record<string, Float32Array> }
+// Float32, NaN where a record has no value; compositions as codes into `keys`.
+export type NumericColumns = {
+  count: number
+  columns: Record<string, Float32Array>
+  compositions: { keys: string[]; codes: Int32Array }
+}
 
 declare function acquireVsCodeApi(): { postMessage(message: unknown): void }
 const vscode = acquireVsCodeApi()
@@ -75,6 +79,7 @@ const molecules = new Map<number, Promise<MoleculeData>>()
 export const api = {
   overview: () => call<Overview>(`overview`),
   records: (start: number, count: number) => call<RecordRow[]>(`records`, start, count),
+  records_at: (indices: ArrayLike<number>) => call<RecordRow[]>(`records_at`, ...Array.from(indices)),
   record_columns: (start: number, count: number) =>
     call<NumericColumns>(`record_columns`, start, count),
   groups: (grouping: number, start: number, count: number) =>

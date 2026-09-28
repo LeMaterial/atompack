@@ -5,7 +5,12 @@ import * as path from 'node:path'
 import { Worker } from 'node:worker_threads'
 import type { AtpReader } from './reader'
 
-export type BinaryColumns = { count: number; columns: Record<string, Float32Array<ArrayBuffer>> }
+export type BinaryColumns = {
+  count: number
+  columns: Record<string, Float32Array<ArrayBuffer>>
+  // Composition keys ("Z:count ...") of the chunk's records, as indices into `keys`.
+  compositions: { keys: string[]; codes: Int32Array<ArrayBuffer> }
+}
 
 // At most half the cores, and no more than 4.
 const WORKERS = Math.min(4, Math.max(1, Math.floor(os.availableParallelism() / 2)))
@@ -14,10 +19,21 @@ const IDLE_MS = 10_000
 
 /** Float32 with NaN for missing values: half the bytes of f64, and far fewer than JSON. */
 export function to_binary(cols: unknown): BinaryColumns {
-  const entries = Object.entries(cols as Record<string, (number | null)[]>)
-  const columns = Object.fromEntries(entries.map(([key, values]) => [key, Float32Array.from(values, (v) => v ?? NaN)]))
-  return { count: entries[0]?.[1].length ?? 0, columns }
+  const { composition = [], ...numeric } = cols as Record<string, (number | null)[]> & { composition?: string[] }
+  const columns = Object.fromEntries(
+    Object.entries(numeric).map(([key, values]) => [key, Float32Array.from(values, (v) => v ?? NaN)]),
+  )
+  const keys = [...new Set(composition)]
+  const code = new Map(keys.map((key, i) => [key, i]))
+  const codes = Int32Array.from(composition, (key) => code.get(key)!)
+  return { count: composition.length, columns, compositions: { keys, codes } }
 }
+
+/** Buffers to transfer rather than copy when posting a chunk. */
+export const buffers = ({ columns, compositions }: BinaryColumns) => [
+  ...Object.values(columns).map((c) => c.buffer),
+  compositions.codes.buffer,
+]
 
 type Job = { start: number; count: number; resolve(value: BinaryColumns): void; reject(err: Error): void }
 

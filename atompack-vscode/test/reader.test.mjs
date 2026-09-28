@@ -34,10 +34,17 @@ for (const [kind, open] of [
         ],
       )
 
+      assert.deepEqual(
+        reader.records_at(5, 0, 4).map((r) => r.index),
+        [5, 0, 4],
+      )
+
       const cols = reader.record_columns(4, 10)
-      assert.deepEqual(Object.keys(cols), [`energy`, `fmax`, `n_atoms`])
+      assert.deepEqual(Object.keys(cols), [`composition`, `energy`, `energy_per_atom`, `fmax`, `n_atoms`])
       assert.deepEqual(cols.energy, [-4, -5])
+      assert.deepEqual(cols.energy_per_atom, [-4 / 5, -5 / 6])
       assert.deepEqual(cols.n_atoms, [5, 6])
+      assert.deepEqual(cols.composition, [`7:5`, `8:6`])
       assert.deepEqual(cols.fmax.map((f) => f.toFixed(4)), [0.4, 0.5].map((f) => (f * Math.sqrt(3)).toFixed(4)))
 
       const mol = reader.molecule(3)

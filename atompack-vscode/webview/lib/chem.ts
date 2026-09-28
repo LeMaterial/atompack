@@ -17,6 +17,22 @@ export function formula(composition: [number, number][]): string {
   return order.map((el) => (counts.get(el)! > 1 ? `${el}${counts.get(el)}` : el)).join(``)
 }
 
+/** Scan composition key ("Z:count ..." by Z, see record_columns) of a formula like H2O or CH3OH. */
+export function composition_key(text: string): string {
+  const counts = new Map<number, number>()
+  const rest = text.trim().replace(/([A-Z][a-z]?)(\d*)/g, (_, el: string, n: string) => {
+    const z = element_data.findIndex((e) => e.symbol === el) + 1
+    if (!z) throw new Error(`unknown element ${el}`)
+    counts.set(z, (counts.get(z) ?? 0) + (n ? Number(n) : 1))
+    return ``
+  })
+  if (rest || !counts.size) throw new Error(`can't read formula "${text.trim()}"`)
+  return [...counts].sort(([a], [b]) => a - b).map(([z, n]) => `${z}:${n}`).join(` `)
+}
+
+export const key_formula = (key: string) =>
+  key ? formula(key.split(` `).map((pair) => pair.split(`:`).map(Number) as [number, number])) : ``
+
 export function composition(numbers: number[]): [number, number][] {
   const counts = new Map<number, number>()
   for (const z of numbers) counts.set(z, (counts.get(z) ?? 0) + 1)

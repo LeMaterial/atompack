@@ -42,7 +42,7 @@
       {:else if tab === `groups`}
         <Groups groupings={info.groupings} on_compare={() => (tab = `compare`)} />
       {:else if tab === `plots`}
-        <Plots total={info.num_records} />
+        <Plots total={info.num_records} on_records={() => (tab = `records`)} />
       {:else}
         <Compare />
       {/if}
