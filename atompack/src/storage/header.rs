@@ -11,6 +11,8 @@ pub(super) struct Header {
     pub(super) schema_len: u64,
     pub(super) index_offset: u64,
     pub(super) index_len: u64,
+    pub(super) extensions_offset: u64,
+    pub(super) extensions_len: u64,
 }
 
 /// Simple corruption detector (not cryptographic). https://en.wikipedia.org/wiki/Adler-32
@@ -49,6 +51,9 @@ pub(super) fn encode_header_slot(header: Header) -> [u8; HEADER_SLOT_SIZE] {
     // bytes that were previously unused.
     slot[60..68].copy_from_slice(&header.schema_offset.to_le_bytes());
     slot[68..76].copy_from_slice(&header.schema_len.to_le_bytes());
+    // Extensions directory (groups, ...): also in bytes older readers ignore.
+    slot[76..84].copy_from_slice(&header.extensions_offset.to_le_bytes());
+    slot[84..92].copy_from_slice(&header.extensions_len.to_le_bytes());
 
     let checksum = adler32(&slot[..HEADER_SLOT_SIZE - 4]);
     slot[HEADER_SLOT_SIZE - 4..HEADER_SLOT_SIZE].copy_from_slice(&checksum.to_le_bytes());
@@ -85,6 +90,8 @@ fn decode_header_slot(slot: &[u8; HEADER_SLOT_SIZE], file_size: u64) -> Option<H
     let record_format = u32::from_le_bytes(slot[56..60].try_into().ok()?);
     let schema_offset = u64::from_le_bytes(slot[60..68].try_into().ok()?);
     let schema_len = u64::from_le_bytes(slot[68..76].try_into().ok()?);
+    let extensions_offset = u64::from_le_bytes(slot[76..84].try_into().ok()?);
+    let extensions_len = u64::from_le_bytes(slot[84..92].try_into().ok()?);
 
     let compression = match compression_type {
         0 => CompressionType::None,
@@ -97,14 +104,19 @@ fn decode_header_slot(slot: &[u8; HEADER_SLOT_SIZE], file_size: u64) -> Option<H
         return None;
     }
 
-    if schema_offset == 0 || schema_len == 0 {
-        if schema_offset != 0 || schema_len != 0 {
-            return None;
-        }
-    } else {
-        let end = schema_offset.checked_add(schema_len)?;
-        if schema_offset < data_start || end > file_size {
-            return None;
+    for (offset, len) in [
+        (schema_offset, schema_len),
+        (extensions_offset, extensions_len),
+    ] {
+        if offset == 0 || len == 0 {
+            if offset != 0 || len != 0 {
+                return None;
+            }
+        } else {
+            let end = offset.checked_add(len)?;
+            if offset < data_start || end > file_size {
+                return None;
+            }
         }
     }
 
@@ -137,6 +149,8 @@ fn decode_header_slot(slot: &[u8; HEADER_SLOT_SIZE], file_size: u64) -> Option<H
         schema_len,
         index_offset,
         index_len,
+        extensions_offset,
+        extensions_len,
     })
 }
 

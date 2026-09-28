@@ -350,7 +350,7 @@ pub(crate) fn tensor_shape_from_payload(
         return Err(invalid_data("Tensor payload truncated at shape"));
     }
     let mut shape = Vec::with_capacity(rank);
-    for chunk in rest[..shape_bytes].chunks_exact(4) {
+    for chunk in rest[..shape_bytes].as_chunks::<4>().0.iter() {
         shape.push(u32::from_le_bytes(slice_to_array(chunk, "tensor shape")?) as usize);
     }
     let data_offset = 1 + shape_bytes;
@@ -504,6 +504,7 @@ pub(crate) struct LazySection {
 /// Byte-offset pair for a known builtin section (payload_start, payload_len, type_tag).
 pub(crate) type BuiltinSlot = (usize, usize, u8);
 
+#[derive(Clone)]
 enum SoaBytes {
     Owned(Vec<u8>),
     Shared(SharedMmapBytes),
@@ -527,6 +528,7 @@ impl std::ops::Deref for SoaBytes {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct SoaMoleculeView {
     bytes: SoaBytes,
     pub(crate) n_atoms: usize,
@@ -1062,7 +1064,9 @@ fn decode_f64_array(payload: &[u8]) -> PyResult<Vec<f64>> {
         return Err(PyValueError::new_err("Invalid f64 array payload length"));
     }
     payload
-        .chunks_exact(8)
+        .as_chunks::<8>()
+        .0
+        .iter()
         .map(|chunk| {
             Ok(f64::from_le_bytes(py_slice_to_array(
                 chunk,
@@ -1077,7 +1081,9 @@ fn decode_i64_array(payload: &[u8]) -> PyResult<Vec<i64>> {
         return Err(PyValueError::new_err("Invalid i64 array payload length"));
     }
     payload
-        .chunks_exact(8)
+        .as_chunks::<8>()
+        .0
+        .iter()
         .map(|chunk| {
             Ok(i64::from_le_bytes(py_slice_to_array(
                 chunk,
@@ -1092,7 +1098,9 @@ fn decode_i32_array(payload: &[u8]) -> PyResult<Vec<i32>> {
         return Err(PyValueError::new_err("Invalid i32 array payload length"));
     }
     payload
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|chunk| {
             Ok(i32::from_le_bytes(py_slice_to_array(
                 chunk,
@@ -1107,7 +1115,9 @@ fn decode_f32_array(payload: &[u8]) -> PyResult<Vec<f32>> {
         return Err(PyValueError::new_err("Invalid f32 array payload length"));
     }
     payload
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|chunk| {
             Ok(f32::from_le_bytes(py_slice_to_array(
                 chunk,
@@ -1122,7 +1132,9 @@ fn decode_vec3_f32(payload: &[u8]) -> PyResult<Vec<[f32; 3]>> {
         return Err(PyValueError::new_err("Invalid vec3<f32> payload length"));
     }
     payload
-        .chunks_exact(12)
+        .as_chunks::<12>()
+        .0
+        .iter()
         .map(|chunk| {
             Ok([
                 f32::from_le_bytes(py_slice_to_array(&chunk[0..4], "vec3<f32> x")?),
@@ -1138,7 +1150,9 @@ fn decode_vec3_f64(payload: &[u8]) -> PyResult<Vec<[f64; 3]>> {
         return Err(PyValueError::new_err("Invalid vec3<f64> payload length"));
     }
     payload
-        .chunks_exact(24)
+        .as_chunks::<24>()
+        .0
+        .iter()
         .map(|chunk| {
             Ok([
                 f64::from_le_bytes(py_slice_to_array(&chunk[0..8], "vec3<f64> x")?),

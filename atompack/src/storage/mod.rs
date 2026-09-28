@@ -17,6 +17,7 @@
 //! │ ...                                  │
 //! │ Record N-1                           │
 //! ├──────────────────────────────────────┤
+//! │ Schema, extensions (groups, ...)     │  ← written on flush when changed
 //! │ Index  [count:u64][entries...]       │  ← rewritten on flush at end of file
 //! └──────────────────────────────────────┘
 //! ```
@@ -27,18 +28,22 @@ use bytemuck::{Pod, Zeroable};
 use memmap2::Mmap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 mod dtypes;
+mod extensions;
 mod header;
 mod index;
 mod schema;
 mod soa;
 
 use self::dtypes::arr;
+use self::extensions::Extensions;
+pub use self::extensions::{GroupColumn, Grouping};
 use self::header::{Header, encode_header_slot, read_best_header};
 use self::index::{IndexStorage, MoleculeIndex, decode_index, encode_index};
 use self::schema::{
@@ -184,6 +189,8 @@ pub struct AtomDatabase {
     schema_lock: Option<SchemaLock>,
     file: Option<File>,
     data_mmap: Option<Arc<Mmap>>,
+    /// Optional sections (groups, ...) referenced from the header.
+    extensions: Extensions,
 }
 
 enum AppendSchema<'a> {
@@ -217,6 +224,8 @@ impl AtomDatabase {
             schema_len: 0,
             index_offset: 0,
             index_len: 0,
+            extensions_offset: 0,
+            extensions_len: 0,
         };
         let slot = encode_header_slot(header);
         file.write_all(&slot)?;
@@ -236,6 +245,7 @@ impl AtomDatabase {
             schema_lock: None,
             file: None,
             data_mmap: None,
+            extensions: Extensions::default(),
         })
     }
 
@@ -344,6 +354,13 @@ impl AtomDatabase {
             None
         };
 
+        let extensions = Extensions::open(
+            &mut file,
+            (header.extensions_offset, header.extensions_len),
+            header.data_start,
+            committed_end,
+        )?;
+
         Ok(Self {
             path,
             compression: header.compression,
@@ -355,6 +372,7 @@ impl AtomDatabase {
             schema_lock,
             file: Some(file),
             data_mmap,
+            extensions,
         })
     }
 
@@ -872,6 +890,7 @@ impl AtomDatabase {
         } else {
             0
         };
+        let (extensions_offset, extensions_len) = self.extensions.write_changed(&mut file)?;
         let index_offset = file.seek(SeekFrom::End(0))?;
         file.write_all(&index_bytes)?;
         file.flush()?;
@@ -889,6 +908,8 @@ impl AtomDatabase {
             schema_len,
             index_offset,
             index_len: index_bytes.len() as u64,
+            extensions_offset,
+            extensions_len,
         };
 
         let slot_offset = if new_generation.is_multiple_of(2) {
@@ -907,7 +928,30 @@ impl AtomDatabase {
             .checked_add(index_bytes.len() as u64)
             .ok_or_else(|| Error::InvalidData("Index end overflow".into()))?;
         self.truncate_tail_on_next_write = false;
+        self.extensions.mark_flushed();
         Ok(())
+    }
+
+    // -- Groups --------------------------------------------------------------
+
+    /// All groupings by name. Decoded from the file on first access.
+    pub fn groups(&self) -> Result<&BTreeMap<String, Grouping>> {
+        let (mmap, path) = (self.data_mmap.as_ref(), &self.path);
+        self.extensions.groups(self.len(), |offset, len| {
+            read_section(mmap, path, offset, len)
+        })
+    }
+
+    /// Append groups to the grouping `name`, creating it if needed. Members
+    /// must reference existing records. Persisted on the next `flush`.
+    pub fn add_groups(&mut self, name: &str, groups: Grouping) -> Result<()> {
+        self.ensure_writable_for_append()?;
+        let num_records = self.len();
+        let (mmap, path) = (self.data_mmap.as_ref(), &self.path);
+        self.extensions
+            .add_groups(name, groups, num_records, |offset, len| {
+                read_section(mmap, path, offset, len)
+            })
     }
 
     // -- Accessors -----------------------------------------------------------
@@ -977,6 +1021,22 @@ impl AtomDatabase {
     pub fn uncompressed_size(&self, index: usize) -> Option<u32> {
         self.index.get(index).map(|e| e.uncompressed_size)
     }
+}
+
+/// Read a committed section, from the mmap when the database has one.
+fn read_section(mmap: Option<&Arc<Mmap>>, path: &Path, offset: u64, len: u64) -> Result<Vec<u8>> {
+    if let Some(mmap) = mmap {
+        let range = offset as usize..(offset + len) as usize;
+        return mmap
+            .get(range)
+            .map(<[u8]>::to_vec)
+            .ok_or_else(|| Error::InvalidData("Section out of bounds".into()));
+    }
+    let mut file = File::open(path)?;
+    file.seek(SeekFrom::Start(offset))?;
+    let mut bytes = vec![0u8; len as usize];
+    file.read_exact(&mut bytes)?;
+    Ok(bytes)
 }
 
 // ---------------------------------------------------------------------------
@@ -1093,6 +1153,8 @@ mod tests {
             schema_len: 0,
             index_offset: 0,
             index_len: 0,
+            extensions_offset: 0,
+            extensions_len: 0,
         };
         let slot = encode_legacy_v2_header_slot(header);
         let mut file = File::create(&path).unwrap();

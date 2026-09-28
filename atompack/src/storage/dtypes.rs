@@ -183,7 +183,7 @@ pub(super) fn tensor_shape_from_payload(
         ));
     }
     let mut shape = Vec::with_capacity(rank);
-    for chunk in rest[..shape_bytes].chunks_exact(4) {
+    for chunk in rest[..shape_bytes].as_chunks::<4>().0.iter() {
         shape.push(u32::from_le_bytes(arr(chunk)?) as usize);
     }
     let data_offset = 1 + shape_bytes;
@@ -342,7 +342,9 @@ pub(super) fn decode_vec3_f32(payload: &[u8]) -> Result<Vec<[f32; 3]>> {
         ));
     }
     payload
-        .chunks_exact(12)
+        .as_chunks::<12>()
+        .0
+        .iter()
         .map(|chunk| {
             Ok([
                 f32::from_le_bytes(arr(&chunk[0..4])?),
@@ -360,7 +362,9 @@ pub(super) fn decode_vec3_f64(payload: &[u8]) -> Result<Vec<[f64; 3]>> {
         ));
     }
     payload
-        .chunks_exact(24)
+        .as_chunks::<24>()
+        .0
+        .iter()
         .map(|chunk| {
             Ok([
                 f64::from_le_bytes(arr(&chunk[0..8])?),
@@ -378,7 +382,9 @@ pub(super) fn decode_f32_array(payload: &[u8]) -> Result<Vec<f32>> {
         ));
     }
     payload
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|chunk| Ok(f32::from_le_bytes(arr(chunk)?)))
         .collect()
 }
@@ -390,7 +396,9 @@ pub(super) fn decode_f64_array(payload: &[u8]) -> Result<Vec<f64>> {
         ));
     }
     payload
-        .chunks_exact(8)
+        .as_chunks::<8>()
+        .0
+        .iter()
         .map(|chunk| Ok(f64::from_le_bytes(arr(chunk)?)))
         .collect()
 }
@@ -466,7 +474,9 @@ pub(super) fn decode_property_value(type_tag: u8, payload: &[u8]) -> Result<Prop
             }
             PropertyValue::IntArray(
                 payload
-                    .chunks_exact(8)
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
                     .map(|chunk| Ok(i64::from_le_bytes(arr(chunk)?)))
                     .collect::<Result<_>>()?,
             )
@@ -481,7 +491,9 @@ pub(super) fn decode_property_value(type_tag: u8, payload: &[u8]) -> Result<Prop
             }
             PropertyValue::Int32Array(
                 payload
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .map(|chunk| Ok(i32::from_le_bytes(arr(chunk)?)))
                     .collect::<Result<_>>()?,
             )
@@ -505,7 +517,9 @@ pub(super) fn decode_property_value(type_tag: u8, payload: &[u8]) -> Result<Prop
             PropertyValue::Tensor(TensorData::I32 {
                 shape,
                 values: payload[data_offset..]
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .map(|chunk| Ok(i32::from_le_bytes(arr(chunk)?)))
                     .collect::<Result<_>>()?,
             })
@@ -515,7 +529,9 @@ pub(super) fn decode_property_value(type_tag: u8, payload: &[u8]) -> Result<Prop
             PropertyValue::Tensor(TensorData::I64 {
                 shape,
                 values: payload[data_offset..]
-                    .chunks_exact(8)
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
                     .map(|chunk| Ok(i64::from_le_bytes(arr(chunk)?)))
                     .collect::<Result<_>>()?,
             })

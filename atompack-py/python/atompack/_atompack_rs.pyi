@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, Sequence, overload
+from typing import Any, Iterator, Literal, Sequence, overload
 
 import numpy as np
+import numpy.typing as npt
 
 class PyAtom:
     """
@@ -534,6 +535,16 @@ class PyAtomDatabase:
         """
         ...
     def __getitem__(self, index: int) -> PyMolecule: ...
+    def add_groups(
+        self,
+        name: str,
+        members: Sequence[dict[str, int]] | Sequence[Sequence[int]] | npt.ArrayLike,
+        properties: dict[str, Any] | None = None,
+        *,
+        roles: Sequence[str] | None = None,
+    ) -> None: ...
+    @property
+    def groups(self) -> Groups: ...
     def flush(self) -> None:
         """
         Flush and save the database to disk.
@@ -541,3 +552,54 @@ class PyAtomDatabase:
         This writes the index and ensures all data is persisted.
         """
         ...
+
+class Groups:
+    """Mapping of grouping name to :class:`Grouping`, available as ``Database.groups``."""
+
+    def __getitem__(self, name: str) -> Grouping: ...
+    def __contains__(self, name: str) -> bool: ...
+    def __len__(self) -> int: ...
+    def __iter__(self) -> Iterator[str]: ...
+    def keys(self) -> list[str]: ...
+
+class Grouping:
+    """
+    A named sequence of groups sharing roles and property keys.
+
+    Index with an int for one :class:`Group`, or with a slice or list of ints
+    for a list of groups (records shared between them are read once).
+    """
+
+    @property
+    def name(self) -> str: ...
+    @property
+    def roles(self) -> list[str]: ...
+    @property
+    def properties(self) -> dict[str, npt.NDArray[Any] | list[str]]: ...
+    def __len__(self) -> int: ...
+    @overload
+    def __getitem__(self, index: int) -> Group: ...
+    @overload
+    def __getitem__(
+        self, index: slice | Sequence[int] | npt.NDArray[np.integer[Any]]
+    ) -> list[Group]: ...
+    def __iter__(self) -> Iterator[Group]: ...
+
+class Group:
+    """
+    One group of related records.
+
+    ``group[role]`` (named roles) or ``group[i]`` (ordered groups) is a
+    :class:`PyMolecule`.
+    """
+
+    @property
+    def members(self) -> dict[str, PyMolecule] | list[PyMolecule]: ...
+    @property
+    def indices(self) -> dict[str, int] | list[int]: ...
+    @property
+    def properties(self) -> dict[str, int | float | str]: ...
+    def __getitem__(self, key: str | int) -> PyMolecule: ...
+    def __contains__(self, key: object) -> bool: ...
+    def __len__(self) -> int: ...
+    def __iter__(self) -> Iterator[Any]: ...

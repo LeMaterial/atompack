@@ -3,6 +3,8 @@ use super::*;
 mod batch;
 #[path = "database_flat.rs"]
 mod flat;
+#[path = "database_groups.rs"]
+pub(crate) mod groups;
 
 /// Python wrapper for AtomDatabase
 #[pyclass]
@@ -345,6 +347,34 @@ impl PyAtomDatabase {
     /// Enable indexing: db[i]
     fn __getitem__(&self, py: Python<'_>, index: usize) -> PyResult<PyMolecule> {
         self.get_molecule(py, index)
+    }
+
+    /// Append groups of related records to the grouping `name`.
+    ///
+    /// `members` is a list of dicts mapping role -> record index (named roles)
+    /// or a list of lists of record indices (ordered groups). With `roles`,
+    /// `members` is a (n_groups, n_roles) integer array where -1 marks an
+    /// absent member. `properties` maps keys to one int, float, or str value
+    /// per group. Records may belong to any number of groups. Call `flush()`
+    /// to persist.
+    #[pyo3(signature = (name, members, properties=None, *, roles=None))]
+    fn add_groups(
+        &mut self,
+        name: &str,
+        members: &Bound<'_, PyAny>,
+        properties: Option<&Bound<'_, PyDict>>,
+        roles: Option<Vec<String>>,
+    ) -> PyResult<()> {
+        let grouping = groups::parse_grouping(members, properties, roles)?;
+        self.inner
+            .add_groups(name, grouping)
+            .map_err(|e| PyValueError::new_err(format!("{}", e)))
+    }
+
+    /// Groupings by name: `db.groups["adsorption"][0]["slab"]`.
+    #[getter]
+    fn groups(slf: PyRef<'_, Self>) -> groups::PyGroups {
+        groups::PyGroups { db: slf.into() }
     }
 
     /// Flush and save the database

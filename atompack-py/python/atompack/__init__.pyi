@@ -1,6 +1,6 @@
 """Type stubs for atompack"""
 
-from typing import Any, Iterable, Literal, Sequence, overload
+from typing import Any, Iterable, Iterator, Literal, Sequence, overload
 
 import numpy as np
 import numpy.typing as npt
@@ -610,6 +610,58 @@ class Database:
         """
         ...
 
+    def add_groups(
+        self,
+        name: str,
+        members: Sequence[dict[str, int]] | Sequence[Sequence[int]] | npt.ArrayLike,
+        properties: dict[str, Sequence[int] | Sequence[float] | Sequence[str] | npt.ArrayLike]
+        | None = None,
+        *,
+        roles: Sequence[str] | None = None,
+    ) -> None:
+        """
+        Append groups of related records to the grouping ``name``.
+
+        A group references records by index, so a record can belong to any
+        number of groups and is stored only once. Call ``flush()`` to persist.
+
+        Parameters
+        ----------
+        name : str
+            Grouping name (created on first use, appended to afterwards)
+        members : list of dict or list of list or array
+            Either ``{role: index}`` dicts (named roles) or lists of indices
+            (ordered groups). With ``roles``, an integer array of shape
+            ``(n_groups, len(roles))`` where ``-1`` marks an absent member.
+        properties : dict, optional
+            One int, float, or str value per group for each key
+        roles : list of str, optional
+            Role names for the columns of an array ``members``
+
+        Examples
+        --------
+        >>> db.add_groups(
+        ...     "adsorption",
+        ...     [{"adslab": 1, "slab": 0}, {"adslab": 2, "slab": 0}],
+        ...     {"adsorption_energy": [-1.2, -0.8]},
+        ... )
+        """
+        ...
+    @property
+    def groups(self) -> Groups:
+        """
+        Groupings stored in the database, by name.
+
+        Examples
+        --------
+        >>> ads = db.groups["adsorption"]
+        >>> len(ads), ads.roles, ads.properties["adsorption_energy"]
+        >>> group = ads[0]
+        >>> group["slab"]  # Molecule
+        >>> group.properties["adsorption_energy"]
+        >>> ads[[0, 5, 7]]  # batch read, shared records read once
+        """
+        ...
     def flush(self) -> None:
         """
         Flush and save the database to disk.
@@ -776,3 +828,64 @@ def add_ase_batch(
 
 __version__: str
 __all__: list[str]
+
+class Groups:
+    """Mapping of grouping name to :class:`Grouping`, available as ``Database.groups``."""
+
+    def __getitem__(self, name: str) -> Grouping: ...
+    def __contains__(self, name: str) -> bool: ...
+    def __len__(self) -> int: ...
+    def __iter__(self) -> Iterator[str]: ...
+    def keys(self) -> list[str]:
+        """Names of the groupings."""
+        ...
+
+class Grouping:
+    """
+    A named sequence of groups sharing roles and property keys.
+
+    Index with an int for one :class:`Group`, or with a slice or list of ints
+    for a list of groups (records shared between them are read once).
+    """
+
+    @property
+    def name(self) -> str: ...
+    @property
+    def roles(self) -> list[str]:
+        """Role names (empty for ordered groups)."""
+        ...
+    @property
+    def properties(self) -> dict[str, npt.NDArray[Any] | list[str]]:
+        """Group properties as columns: numpy arrays for numbers, lists for str."""
+        ...
+    def __len__(self) -> int: ...
+    @overload
+    def __getitem__(self, index: int) -> Group: ...
+    @overload
+    def __getitem__(
+        self, index: slice | Sequence[int] | npt.NDArray[np.integer[Any]]
+    ) -> list[Group]: ...
+    def __iter__(self) -> Iterator[Group]: ...
+
+class Group:
+    """
+    One group of related records.
+
+    ``group[role]`` (named roles) or ``group[i]`` (ordered groups) is a
+    :class:`Molecule`.
+    """
+
+    @property
+    def members(self) -> dict[str, Molecule] | list[Molecule]:
+        """``{role: Molecule}`` for named roles, ``[Molecule, ...]`` otherwise."""
+        ...
+    @property
+    def indices(self) -> dict[str, int] | list[int]:
+        """Record indices, shaped like ``members``."""
+        ...
+    @property
+    def properties(self) -> dict[str, int | float | str]: ...
+    def __getitem__(self, key: str | int) -> Molecule: ...
+    def __contains__(self, key: object) -> bool: ...
+    def __len__(self) -> int: ...
+    def __iter__(self) -> Iterator[Any]: ...
