@@ -56,6 +56,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "atompack-wasm"
+version = "0.4.1"
+dependencies = [
+ "atompack",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

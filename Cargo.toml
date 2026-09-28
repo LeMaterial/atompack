@@ -1,5 +1,5 @@
 [workspace]
-members = ["atompack", "atompack-py"]
+members = ["atompack", "atompack-py", "atompack-wasm"]
 resolver = "2"
 
 [workspace.package]
