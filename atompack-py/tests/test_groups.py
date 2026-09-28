@@ -134,3 +134,76 @@ def test_group_errors(tmp_path: Path) -> None:
             db.groups["g"][bad]
     with pytest.raises(ValueError, match="read-only"):
         db.add_groups("g", [[0]], {"y": [1.0]})
+
+
+def test_iteration_and_shared_records_in_batches(tmp_path: Path) -> None:
+    db = _db(tmp_path / "many.atp")
+    n_groups = 600  # crosses the iterator's 256-group prefetch boundary
+    members = [[i % 4, (i + 1) % 4] for i in range(n_groups)]
+    db.add_groups("many", members, {"i": list(range(n_groups))})
+    db.add_groups("repeat", [[0, 0, 1]])
+    many = db.groups["many"]
+
+    assert [g.indices for g in many] == members
+    assert [g.properties["i"] for g in many] == list(range(n_groups))
+    batch = many[[0, 4, 0, 599]]  # same group twice, same records across groups
+    assert [g.indices for g in batch] == [members[0], members[4], members[0], members[599]]
+    assert [[m.energy for m in g] for g in batch] == [
+        [0.0, 1.0],
+        [0.0, 1.0],
+        [0.0, 1.0],
+        [3.0, 0.0],
+    ]
+    assert [m.energy for m in db.groups["repeat"][0]] == [0.0, 0.0, 1.0]
+
+
+def _shard(path: Path, groups: list | None, props: dict | None = None) -> None:
+    db = _db(path)  # 4 records with energies 0..3
+    if groups is not None:
+        db.add_groups("pairs", groups, props)
+    db.flush()
+
+
+def test_sharded_reader_groups(tmp_path: Path) -> None:
+    shards = tmp_path / "shards"
+    shards.mkdir()
+    _shard(shards / "a.atp", [{"x": 0, "y": 1}, {"x": 2, "y": 3}], {"e": [0.5, 1.5]})
+    _shard(shards / "b.atp", None)  # no groups in this shard
+    _shard(shards / "c.atp", [{"x": 3, "z": 0}], {"e": [2.5]})
+
+    reader = atompack.hub.open_path(shards)
+    assert list(reader.groups) == ["pairs"] and "pairs" in reader.groups
+    pairs = reader.groups["pairs"]
+    assert len(pairs) == 3
+    assert pairs.roles == ["x", "y", "z"]
+    np.testing.assert_array_equal(pairs.properties["e"], [0.5, 1.5, 2.5])
+
+    # Record indices are global: reader[index] is the same record as the member.
+    assert pairs[2].indices == {"x": 11, "z": 8}
+    assert pairs[-1].indices == pairs[2].indices
+    for group in pairs:
+        for role, index in group.indices.items():
+            assert reader[index].energy == group[role].energy
+
+    batch = pairs[[2, 0, 2]]  # crosses shards, keeps order
+    assert [g.properties["e"] for g in batch] == [2.5, 0.5, 2.5]
+    assert [g.properties["e"] for g in pairs[1:]] == [1.5, 2.5]
+    with pytest.raises(IndexError):
+        pairs[3]
+    with pytest.raises(KeyError):
+        reader.groups["missing"]
+
+
+def test_sharded_reader_rejects_inconsistent_groupings(tmp_path: Path) -> None:
+    shards = tmp_path / "shards"
+    shards.mkdir()
+    _shard(shards / "a.atp", [[0, 1]], {"e": [0.5]})
+    _shard(shards / "b.atp", [[2]], {"e": [1]})  # int column vs float column
+    pairs = atompack.hub.open_path(shards).groups["pairs"]
+    with pytest.raises(ValueError, match="different types"):
+        _ = pairs.properties
+
+    (shards / "b.atp").unlink()
+    _shard(shards / "b.atp", [{"x": 2}], {"e": [1.0]})  # named vs ordered
+    with pytest.raises(ValueError, match="mixes"):
+        atompack.hub.open_path(shards).groups["pairs"]

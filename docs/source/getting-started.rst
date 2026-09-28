@@ -136,6 +136,11 @@ Groups can also be ordered lists (``[[0, 1, 2], [3, 4]]``, then ``group[0]``), o
 integer array with ``roles=[...]`` where ``-1`` marks an absent member. Calling ``add_groups``
 again with the same name appends to that grouping.
 
+Sharded datasets opened with ``atompack.hub.open_path`` (or ``hub.open``) expose the same API
+through ``reader.groups``: a grouping is concatenated across shards, and group and record indices
+are global, so ``reader[group.indices["slab"]]`` is ``group["slab"]``. Groups never span shards:
+write all members of a group, including shared records such as a clean slab, into the same shard.
+
 Files with groups stay readable by older Atompack versions, which see only the records. Append to
 grouped files with Atompack 0.5 or newer: older versions drop the groups when they flush.
 

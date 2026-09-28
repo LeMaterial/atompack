@@ -181,13 +181,17 @@ fn property_values<'py>(
     Ok(dict)
 }
 
+/// Number of groups loaded at a time while iterating over a grouping.
+const ITER_PREFETCH: usize = 256;
+
 /// Load groups; records shared between the requested groups are read and
-/// decompressed once.
+/// decompressed once. `record_offset` is added to the reported indices.
 fn load_groups(
     db: &PyAtomDatabase,
     py: Python<'_>,
     name: &str,
     indices: Vec<usize>,
+    record_offset: u64,
 ) -> PyResult<Vec<PyGroup>> {
     let g = grouping(&db.inner, name)?;
     let ranges = indices
@@ -218,7 +222,7 @@ fn load_groups(
             })?;
             Ok(PyGroup {
                 members: members.unbind(),
-                indices: members_object(py, g, range, Ok)?.unbind(),
+                indices: members_object(py, g, range, |r| Ok(r + record_offset))?.unbind(),
                 properties: property_values(py, g, index)?.unbind(),
             })
         })
@@ -261,6 +265,7 @@ impl PyGroups {
         Ok(PyGrouping {
             db: self.db.clone_ref(py),
             name: name.to_string(),
+            record_offset: 0,
         })
     }
 
@@ -291,6 +296,8 @@ impl PyGroups {
 pub(crate) struct PyGrouping {
     db: Py<PyAtomDatabase>,
     name: String,
+    /// Added to reported record indices (global indices in sharded readers).
+    record_offset: u64,
 }
 
 impl PyGrouping {
@@ -299,7 +306,13 @@ impl PyGrouping {
     }
 
     fn load(&self, py: Python<'_>, indices: Vec<usize>) -> PyResult<Vec<PyGroup>> {
-        load_groups(&self.db.borrow(py), py, &self.name, indices)
+        load_groups(
+            &self.db.borrow(py),
+            py,
+            &self.name,
+            indices,
+            self.record_offset,
+        )
     }
 }
 
@@ -356,6 +369,16 @@ impl PyGrouping {
         PyGroupingIter {
             grouping: slf.into(),
             next: 0,
+            buffer: Vec::new().into_iter(),
+        }
+    }
+
+    /// This grouping with record indices shifted by `offset` (sharded readers).
+    fn _with_record_offset(&self, py: Python<'_>, offset: u64) -> PyGrouping {
+        PyGrouping {
+            db: self.db.clone_ref(py),
+            name: self.name.clone(),
+            record_offset: self.record_offset + offset,
         }
     }
 
@@ -377,6 +400,7 @@ impl PyGrouping {
 pub(crate) struct PyGroupingIter {
     grouping: Py<PyGrouping>,
     next: usize,
+    buffer: std::vec::IntoIter<PyGroup>,
 }
 
 #[pymethods]
@@ -386,13 +410,17 @@ impl PyGroupingIter {
     }
 
     fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<PyGroup>> {
+        if let Some(group) = self.buffer.next() {
+            return Ok(Some(group));
+        }
         let grouping = self.grouping.borrow(py);
-        if self.next >= grouping.__len__(py)? {
+        let end = (self.next + ITER_PREFETCH).min(grouping.__len__(py)?);
+        if self.next >= end {
             return Ok(None);
         }
-        let group = grouping.load(py, vec![self.next])?.remove(0);
-        self.next += 1;
-        Ok(Some(group))
+        self.buffer = grouping.load(py, (self.next..end).collect())?.into_iter();
+        self.next = end;
+        Ok(self.buffer.next())
     }
 }
 
