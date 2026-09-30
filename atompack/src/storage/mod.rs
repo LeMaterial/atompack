@@ -10,17 +10,22 @@
 //! ```text
 //! ┌──────────────────────────────────────┐
 //! │ Header slot A  (4096 bytes)          │  ← crash-safe: two slots alternate
-//! │ Header slot B  (4096 bytes)          │     on each flush (generation counter)
+//! │ Header slot B  (4096 bytes)          │     (generation counter)
 //! ├──────────────────────────────────────┤
-//! │ Record 0  (SOA molecule record)      │
-//! │ Record 1  (SOA molecule record)      │
-//! │ ...                                  │
-//! │ Record N-1                           │
-//! ├──────────────────────────────────────┤
-//! │ Schema, extensions (groups, ...)     │  ← written on flush when changed
-//! │ Index  [count:u64][entries...]       │  ← rewritten on flush at end of file
+//! │ Frame: schema                        │  ← data region: framed entries only
+//! │ Frame: record 0 .. record N-1        │     (see `frames`)
+//! │ Frame: groups chunk, ...             │
+//! ├──────────────────────────────────────┤  ← data_end
+//! │ Metadata directory                   │  ← cache written by flush, replaced
+//! │ Index  [count:u64][entries...]       │     by the next write session
 //! └──────────────────────────────────────┘
 //! ```
+//!
+//! Writing after a flush first marks both header slots as "writing", then
+//! overwrites the cache with new frames; the next flush writes a new cache
+//! and commits the header. Files are always compact, and a crash at any point
+//! is recovered on open by scanning the frames. Files without the framed flag
+//! (written by older versions) keep appending after their last commit.
 
 use crate::compression::{CompressionType, compress, decompress};
 use crate::{Error, Molecule, Result};
@@ -30,12 +35,13 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 mod dtypes;
 mod extensions;
+mod frames;
 mod header;
 mod index;
 mod schema;
@@ -44,6 +50,10 @@ mod soa;
 use self::dtypes::arr;
 use self::extensions::Extensions;
 pub use self::extensions::{GroupColumn, Grouping};
+use self::frames::{
+    FRAME_GROUPS, FRAME_HEADER_SIZE, FRAME_RECORD, FRAME_SCHEMA, MetaFrame, encode_schema_payload,
+    frame_header, scan_frames,
+};
 use self::header::{Header, encode_header_slot, read_best_header};
 use self::index::{IndexStorage, MoleculeIndex, decode_index, encode_index};
 use self::schema::{
@@ -89,6 +99,12 @@ const TYPE_TENSOR_F32: u8 = 14; // [ndim:u8][dims:u32...][f32...]
 const TYPE_TENSOR_F64: u8 = 15; // [ndim:u8][dims:u32...][f64...]
 const TYPE_TENSOR_I32: u8 = 16; // [ndim:u8][dims:u32...][i32...]
 const TYPE_TENSOR_I64: u8 = 17; // [ndim:u8][dims:u32...][i64...]
+
+// Header flags.
+/// Every entry after the header region is framed (see `frames`).
+const HEADER_FRAMED: u32 = 1;
+/// A write session is in progress: the metadata cache is being replaced.
+const HEADER_WRITING: u32 = 2;
 
 // Two redundant page-aligned header slots for crash safety.
 const HEADER_SLOT_SIZE: usize = 4096;
@@ -181,15 +197,21 @@ pub struct AtomDatabase {
     compression: CompressionType,
     generation: u64,
     record_format: u32,
-    /// File offset up to which data has been committed (flushed). Anything
-    /// beyond this is an uncommitted tail from a previous crash.
-    committed_end: u64,
-    truncate_tail_on_next_write: bool,
+    /// Files created by this version frame every entry; older files keep
+    /// appending after their last commit.
+    framed: bool,
+    /// Where the next frame is written: the end of the frames, or the end of
+    /// the last commit for unframed files.
+    write_end: u64,
+    /// Frames were written since the last commit.
+    writing: bool,
     index: IndexStorage,
     schema_lock: Option<SchemaLock>,
+    /// (offset, len) of the latest schema blob, inside its frame.
+    schema_span: (u64, u64),
     file: Option<File>,
     data_mmap: Option<Arc<Mmap>>,
-    /// Optional sections (groups, ...) referenced from the header.
+    /// Metadata frames (groups, ...).
     extensions: Extensions,
 }
 
@@ -212,41 +234,27 @@ impl AtomDatabase {
     }
 
     fn create_with_format<P: AsRef<Path>>(path: P, compression: CompressionType) -> Result<Self> {
-        let path = path.as_ref().to_path_buf();
-        let mut file = File::create(&path)?;
-        let header = Header {
-            generation: 0,
-            data_start: HEADER_REGION_SIZE,
-            num_molecules: 0,
-            compression,
-            record_format: RECORD_FORMAT_SOA,
-            schema_offset: 0,
-            schema_len: 0,
-            index_offset: 0,
-            index_len: 0,
-            extensions_offset: 0,
-            extensions_len: 0,
-        };
-        let slot = encode_header_slot(header);
-        file.write_all(&slot)?;
-        file.write_all(&slot)?;
-        file.flush()?;
-        file.sync_all()?;
-        drop(file);
-
-        Ok(Self {
-            path,
+        let db = Self {
+            path: path.as_ref().to_path_buf(),
             compression,
             generation: 0,
             record_format: RECORD_FORMAT_SOA,
-            committed_end: HEADER_REGION_SIZE,
-            truncate_tail_on_next_write: false,
+            framed: true,
+            write_end: HEADER_REGION_SIZE,
+            writing: false,
             index: IndexStorage::InMemory(Vec::new()),
             schema_lock: None,
+            schema_span: (0, 0),
             file: None,
             data_mmap: None,
             extensions: Extensions::default(),
-        })
+        };
+        let mut file = File::create(&db.path)?;
+        let slot = encode_header_slot(db.header(HEADER_FRAMED, (0, 0), (0, 0)));
+        file.write_all(&slot)?;
+        file.write_all(&slot)?;
+        file.sync_all()?;
+        Ok(db)
     }
 
     // -- Opening -------------------------------------------------------------
@@ -301,18 +309,6 @@ impl AtomDatabase {
             )));
         }
 
-        let committed_end = if header.index_offset == 0 || header.index_len == 0 {
-            header.data_start
-        } else {
-            header
-                .index_offset
-                .checked_add(header.index_len)
-                .ok_or_else(|| Error::InvalidData("Index end overflow".into()))?
-        };
-
-        let file_size = file.metadata()?.len();
-        let truncate_tail_on_next_write = !use_mmap && file_size > committed_end;
-
         // Read or memory-map the index
         // When mmap mode is requested, create a single mmap for both index and data access
         let data_mmap = if use_mmap {
@@ -326,6 +322,10 @@ impl AtomDatabase {
         } else {
             None
         };
+
+        if header.flags & HEADER_WRITING != 0 {
+            return Self::recover(path, file, header, data_mmap);
+        }
 
         let index = if header.index_offset > 0 {
             if use_mmap {
@@ -358,40 +358,159 @@ impl AtomDatabase {
             &mut file,
             (header.extensions_offset, header.extensions_len),
             header.data_start,
-            committed_end,
         )?;
+        let framed = header.flags & HEADER_FRAMED != 0;
+        let write_end = if framed {
+            header.data_end
+        } else if header.index_len > 0 {
+            header.index_offset + header.index_len
+        } else {
+            header.data_start
+        };
 
         Ok(Self {
             path,
             compression: header.compression,
             generation: header.generation,
             record_format: header.record_format,
-            committed_end,
-            truncate_tail_on_next_write,
+            framed,
+            write_end,
+            writing: false,
             index,
             schema_lock,
+            schema_span: (header.schema_offset, header.schema_len),
             file: Some(file),
             data_mmap,
             extensions,
         })
     }
 
-    fn truncate_uncommitted_tail_if_needed(&mut self) -> Result<()> {
-        if !self.truncate_tail_on_next_write {
+    /// Open a file whose write session was interrupted: rebuild the index,
+    /// schema and metadata directory from its frames. The session stays open,
+    /// so the next flush commits everything recovered.
+    fn recover(
+        path: PathBuf,
+        file: File,
+        header: Header,
+        data_mmap: Option<Arc<Mmap>>,
+    ) -> Result<Self> {
+        let scan = scan_frames(&path, header.data_start)?;
+        let (record_format, schema_lock, schema_span) = match scan.schema {
+            Some(frame) => {
+                let payload = read_section(data_mmap.as_ref(), &path, frame.offset, frame.len)?;
+                let (format, blob) = payload
+                    .split_first_chunk::<4>()
+                    .ok_or_else(|| Error::InvalidData("Schema frame too small".into()))?;
+                (
+                    u32::from_le_bytes(*format),
+                    Some(decode_schema_lock(blob)?),
+                    (frame.offset + 4, frame.len - 4),
+                )
+            }
+            None => (header.record_format, None, (0, 0)),
+        };
+        Ok(Self {
+            path,
+            compression: header.compression,
+            generation: header.generation,
+            record_format,
+            framed: true,
+            write_end: scan.end,
+            writing: true,
+            index: IndexStorage::InMemory(scan.index),
+            schema_lock,
+            schema_span,
+            file: Some(file),
+            data_mmap,
+            extensions: Extensions::from_frames(scan.metadata),
+        })
+    }
+
+    /// Header describing the current state, with the given flags and the
+    /// (offset, len) of the metadata directory and index.
+    fn header(&self, flags: u32, directory: (u64, u64), index: (u64, u64)) -> Header {
+        Header {
+            generation: self.generation,
+            data_start: HEADER_REGION_SIZE,
+            num_molecules: self.index.len() as u64,
+            compression: self.compression,
+            record_format: self.record_format,
+            schema_offset: self.schema_span.0,
+            schema_len: self.schema_span.1,
+            index_offset: index.0,
+            index_len: index.1,
+            extensions_offset: directory.0,
+            extensions_len: directory.1,
+            flags,
+            data_end: self.write_end,
+        }
+    }
+
+    /// Write `header` into the slot for its generation.
+    fn write_header(file: &mut File, header: Header) -> Result<()> {
+        let slot_offset = if header.generation.is_multiple_of(2) {
+            HEADER_SLOT_A_OFFSET
+        } else {
+            HEADER_SLOT_B_OFFSET
+        };
+        file.seek(SeekFrom::Start(slot_offset))?;
+        file.write_all(&encode_header_slot(header))?;
+        Ok(())
+    }
+
+    /// Start a write session. For framed files, both header slots are marked
+    /// as writing before anything after `write_end` can be overwritten: a
+    /// crash is then recovered from the frames, and older versions, which
+    /// cannot recover, refuse the file instead of reading stale metadata.
+    fn begin_write(&mut self) -> Result<()> {
+        self.ensure_writable()?;
+        if self.writing {
             return Ok(());
         }
-
-        let file = OpenOptions::new().write(true).open(&self.path)?;
-        let file_size = file.metadata()?.len();
-
-        if file_size > self.committed_end {
-            file.set_len(self.committed_end)?;
-            file.sync_all()?;
+        if self.framed {
+            let mut file = OpenOptions::new().write(true).open(&self.path)?;
+            for _ in 0..2 {
+                self.generation += 1;
+                let mut header = self.header(HEADER_FRAMED | HEADER_WRITING, (0, 0), (0, 0));
+                // Invalid for older versions: they require an index when count > 0.
+                header.num_molecules = u64::MAX;
+                Self::write_header(&mut file, header)?;
+            }
+            file.sync_data()?;
         }
-
-        self.truncate_tail_on_next_write = false;
-        self.file = None;
+        self.writing = true;
         Ok(())
+    }
+
+    /// Write frames at `write_end`. Returns each frame's payload offset.
+    fn write_frames<'a>(
+        &mut self,
+        frames: impl IntoIterator<Item = ([u8; FRAME_HEADER_SIZE], &'a [u8])>,
+    ) -> Result<Vec<u64>> {
+        self.begin_write()?;
+        let file = OpenOptions::new().write(true).open(&self.path)?;
+        let mut out = BufWriter::with_capacity(1 << 22, file);
+        out.seek(SeekFrom::Start(self.write_end))?;
+        let mut end = self.write_end;
+        let mut offsets = Vec::new();
+        for (header, payload) in frames {
+            out.write_all(&header)?;
+            out.write_all(payload)?;
+            offsets.push(end + FRAME_HEADER_SIZE as u64);
+            end += (FRAME_HEADER_SIZE + payload.len()) as u64;
+        }
+        out.flush()?;
+        self.write_end = end;
+        Ok(offsets)
+    }
+
+    fn write_metadata_frame(&mut self, kind: u32, payload: &[u8]) -> Result<MetaFrame> {
+        let offset = self.write_frames([(frame_header(kind, payload, 0, 0), payload)])?[0];
+        Ok(MetaFrame {
+            kind,
+            offset,
+            len: payload.len() as u64,
+        })
     }
 
     fn rebuild_schema_lock(&self) -> Result<SchemaLock> {
@@ -455,7 +574,7 @@ impl AtomDatabase {
         }
     }
 
-    fn ensure_schema_compatible<'a, I>(&mut self, records: I) -> Result<()>
+    fn infer_schema<'a, I>(&self, records: I) -> Result<(u32, SchemaLock)>
     where
         I: IntoIterator<Item = (&'a [u8], Option<u8>)>,
     {
@@ -480,113 +599,79 @@ impl AtomDatabase {
             };
             merge_schema_lock(&mut lock, &record)?;
         }
-
-        self.record_format = record_format;
-        self.schema_lock = Some(lock);
-        Ok(())
+        Ok((record_format, lock))
     }
 
-    fn ensure_schema_lock(&mut self, incoming: &SchemaLock) -> Result<()> {
-        self.record_format = self.resolved_record_format_for_schema(incoming)?;
+    fn merge_schema(&self, incoming: &SchemaLock) -> Result<(u32, SchemaLock)> {
+        let record_format = self.resolved_record_format_for_schema(incoming)?;
         let mut lock = match &self.schema_lock {
             Some(lock) => lock.clone(),
             None if self.index.is_empty() => SchemaLock::default(),
             None => self.rebuild_schema_lock()?,
         };
         merge_schema_lock(&mut lock, incoming)?;
-        self.schema_lock = Some(lock);
-        Ok(())
+        Ok((record_format, lock))
     }
 
-    fn ensure_writable_for_append(&self) -> Result<()> {
-        if matches!(&self.index, IndexStorage::MemoryMapped { .. }) {
+    fn ensure_writable(&self) -> Result<()> {
+        if self.data_mmap.is_some() {
             return Err(Error::InvalidData(
-                "Cannot add molecules to a database opened with a memory-mapped index (read-only); reopen without mmap to write."
+                "Cannot write to a database opened with mmap (read-only); reopen without mmap to write."
                     .into(),
             ));
         }
         Ok(())
     }
 
-    fn prepare_append<'a>(&mut self, schema: AppendSchema<'a>) -> Result<()> {
-        self.ensure_writable_for_append()?;
-        self.truncate_uncommitted_tail_if_needed()?;
-        match schema {
-            AppendSchema::Infer(records) => self.ensure_schema_compatible(records),
-            AppendSchema::Locked(schema) => self.ensure_schema_lock(&schema),
+    /// Resolve the schema for the next records; a changed schema is written
+    /// as a frame before those records so that recovery can decode them.
+    fn prepare_append(&mut self, schema: AppendSchema<'_>) -> Result<()> {
+        self.ensure_writable()?;
+        let (record_format, lock) = match schema {
+            AppendSchema::Infer(records) => self.infer_schema(records)?,
+            AppendSchema::Locked(schema) => self.merge_schema(&schema)?,
+        };
+        if record_format != self.record_format || self.schema_lock.as_ref() != Some(&lock) {
+            let payload = encode_schema_payload(record_format, &lock)?;
+            let frame = self.write_metadata_frame(FRAME_SCHEMA, &payload)?;
+            self.schema_span = (frame.offset + 4, frame.len - 4);
         }
-    }
-
-    fn write_owned_records(&mut self, records: Vec<(Vec<u8>, u32)>) -> Result<()> {
-        let compression = self.compression;
-
-        let compressed_records: Vec<(Vec<u8>, u32, u32)> = records
-            .into_par_iter()
-            .map(|(bytes, num_atoms)| {
-                let uncompressed_size = bytes.len() as u32;
-                let compressed = compress(&bytes, compression)?;
-                Ok((compressed, uncompressed_size, num_atoms))
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        let mut file = OpenOptions::new().append(true).open(&self.path)?;
-
-        let mut offset = file.seek(SeekFrom::End(0))?;
-        let mut new_indices = Vec::with_capacity(compressed_records.len());
-
-        for (compressed_data, uncompressed_size, num_atoms) in compressed_records {
-            file.write_all(&compressed_data)?;
-
-            new_indices.push(MoleculeIndex {
-                offset,
-                compressed_size: compressed_data.len() as u32,
-                uncompressed_size,
-                num_atoms,
-            });
-
-            offset += compressed_data.len() as u64;
-        }
-
-        file.flush()?;
-        self.index.extend(new_indices)?;
-
+        self.record_format = record_format;
+        self.schema_lock = Some(lock);
         Ok(())
     }
 
-    fn write_borrowed_records(&mut self, records: &[(&[u8], u32)]) -> Result<()> {
+    /// Compress records in parallel and append them as frames.
+    fn write_records<T: AsRef<[u8]> + Sync>(&mut self, records: &[(T, u32)]) -> Result<()> {
         let compression = self.compression;
-
-        let compressed_records: Vec<(Vec<u8>, u32, u32)> = records
+        let framed: Vec<([u8; FRAME_HEADER_SIZE], Vec<u8>)> = records
             .par_iter()
             .map(|(bytes, num_atoms)| {
-                let uncompressed_size = bytes.len() as u32;
-                let compressed = compress(bytes, compression)?;
-                Ok((compressed, uncompressed_size, *num_atoms))
+                let bytes = bytes.as_ref();
+                let payload = compress(bytes, compression)?;
+                let header = frame_header(FRAME_RECORD, &payload, bytes.len() as u32, *num_atoms);
+                Ok((header, payload))
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Result<_>>()?;
 
-        let mut file = OpenOptions::new().append(true).open(&self.path)?;
-
-        let mut offset = file.seek(SeekFrom::End(0))?;
-        let mut new_indices = Vec::with_capacity(compressed_records.len());
-
-        for (compressed_data, uncompressed_size, num_atoms) in compressed_records {
-            file.write_all(&compressed_data)?;
-
-            new_indices.push(MoleculeIndex {
-                offset,
-                compressed_size: compressed_data.len() as u32,
-                uncompressed_size,
-                num_atoms,
-            });
-
-            offset += compressed_data.len() as u64;
-        }
-
-        file.flush()?;
-        self.index.extend(new_indices)?;
-
-        Ok(())
+        let offsets = self.write_frames(
+            framed
+                .iter()
+                .map(|(header, payload)| (*header, payload.as_slice())),
+        )?;
+        let entries = offsets
+            .into_iter()
+            .zip(records.iter().zip(&framed))
+            .map(
+                |(offset, ((bytes, num_atoms), (_, payload)))| MoleculeIndex {
+                    offset,
+                    compressed_size: payload.len() as u32,
+                    uncompressed_size: bytes.as_ref().len() as u32,
+                    num_atoms: *num_atoms,
+                },
+            )
+            .collect();
+        self.index.extend(entries)
     }
 
     // -- Writing -------------------------------------------------------------
@@ -717,7 +802,7 @@ impl AtomDatabase {
             .iter()
             .map(|(bytes, num_atoms, _)| (*bytes, *num_atoms))
             .collect::<Vec<_>>();
-        self.write_borrowed_records(&borrowed)
+        self.write_records(&borrowed)
     }
 
     fn append_owned_soa_records(&mut self, records: Vec<(Vec<u8>, u32, u8)>) -> Result<()> {
@@ -728,11 +813,11 @@ impl AtomDatabase {
                 .collect(),
         ))?;
 
-        let records = records
+        let records: Vec<(Vec<u8>, u32)> = records
             .into_iter()
             .map(|(bytes, num_atoms, _positions_type)| (bytes, num_atoms))
             .collect();
-        self.write_owned_records(records)
+        self.write_records(&records)
     }
 
     fn append_owned_soa_records_prevalidated(
@@ -741,7 +826,7 @@ impl AtomDatabase {
         batch_schema: SchemaLock,
     ) -> Result<()> {
         self.prepare_append(AppendSchema::Locked(batch_schema))?;
-        self.write_owned_records(records)
+        self.write_records(&records)
     }
 
     fn append_raw_soa_records_prevalidated(
@@ -750,7 +835,7 @@ impl AtomDatabase {
         batch_schema: SchemaLock,
     ) -> Result<()> {
         self.prepare_append(AppendSchema::Locked(batch_schema))?;
-        self.write_borrowed_records(records)
+        self.write_records(records)
     }
 
     // -- Reading -------------------------------------------------------------
@@ -857,78 +942,52 @@ impl AtomDatabase {
 
     // -- Flush ---------------------------------------------------------------
 
-    /// Write the index to the end of the file and update one header slot.
-    /// Until flush is called, added molecules are recoverable from the file
-    /// but not visible to readers that open the database.
+    /// Commit everything written since the last flush: write the metadata
+    /// directory and the index after the last frame, drop anything beyond
+    /// them, then publish them in the header. Does nothing when there is
+    /// nothing new.
     pub fn flush(&mut self) -> Result<()> {
-        if matches!(&self.index, IndexStorage::MemoryMapped { .. }) {
-            return Err(Error::InvalidData(
-                "Cannot flush a database opened with a memory-mapped index (read-only); reopen without mmap to write."
-                    .into(),
-            ));
+        self.ensure_writable()?;
+        if !self.writing {
+            return Ok(());
         }
-
-        self.truncate_uncommitted_tail_if_needed()?;
-
-        let index_vec = match &self.index {
-            IndexStorage::InMemory(vec) => vec.as_slice(),
-            IndexStorage::MemoryMapped { .. } => unreachable!(),
+        let index_bytes = match &self.index {
+            IndexStorage::InMemory(entries) => encode_index(entries),
+            IndexStorage::MemoryMapped { .. } => {
+                unreachable!("writable databases load their index")
+            }
         };
-
-        let index_bytes = encode_index(index_vec);
-        let schema_bytes = self
-            .schema_lock
-            .as_ref()
-            .map(encode_schema_lock)
-            .transpose()?;
+        let directory = self.extensions.encode_directory().unwrap_or_default();
 
         let mut file = OpenOptions::new().write(true).open(&self.path)?;
-        let schema_offset = file.seek(SeekFrom::End(0))?;
-        let schema_len = if let Some(schema_bytes) = &schema_bytes {
-            file.write_all(schema_bytes)?;
-            schema_bytes.len() as u64
-        } else {
-            0
-        };
-        let (extensions_offset, extensions_len) = self.extensions.write_changed(&mut file)?;
-        let index_offset = file.seek(SeekFrom::End(0))?;
+        let data_end = self.write_end;
+        file.seek(SeekFrom::Start(data_end))?;
+        file.write_all(&directory)?;
         file.write_all(&index_bytes)?;
-        file.flush()?;
-        // Ensure the new index is on disk before publishing it in the header.
+        let index_offset = data_end + directory.len() as u64;
+        let end = index_offset + index_bytes.len() as u64;
+        file.set_len(end)?;
+        // The metadata must be on disk before the header points at it.
         file.sync_data()?;
 
-        let new_generation = self.generation.saturating_add(1);
-        let header = Header {
-            generation: new_generation,
-            data_start: HEADER_REGION_SIZE,
-            num_molecules: self.index.len() as u64,
-            compression: self.compression,
-            record_format: self.record_format,
-            schema_offset: if schema_len > 0 { schema_offset } else { 0 },
-            schema_len,
-            index_offset,
-            index_len: index_bytes.len() as u64,
-            extensions_offset,
-            extensions_len,
+        self.generation += 1;
+        let directory_span = match directory.len() as u64 {
+            0 => (0, 0),
+            len => (data_end, len),
         };
-
-        let slot_offset = if new_generation.is_multiple_of(2) {
-            HEADER_SLOT_A_OFFSET
-        } else {
-            HEADER_SLOT_B_OFFSET
-        };
-        let slot = encode_header_slot(header);
-        file.seek(SeekFrom::Start(slot_offset))?;
-        file.write_all(&slot)?;
-        file.flush()?;
+        let flags = if self.framed { HEADER_FRAMED } else { 0 };
+        let header = self.header(
+            flags,
+            directory_span,
+            (index_offset, index_bytes.len() as u64),
+        );
+        Self::write_header(&mut file, header)?;
         file.sync_all()?;
 
-        self.generation = new_generation;
-        self.committed_end = index_offset
-            .checked_add(index_bytes.len() as u64)
-            .ok_or_else(|| Error::InvalidData("Index end overflow".into()))?;
-        self.truncate_tail_on_next_write = false;
-        self.extensions.mark_flushed();
+        self.writing = false;
+        if !self.framed {
+            self.write_end = end;
+        }
         Ok(())
     }
 
@@ -943,15 +1002,19 @@ impl AtomDatabase {
     }
 
     /// Append groups to the grouping `name`, creating it if needed. Members
-    /// must reference existing records. Persisted on the next `flush`.
+    /// must reference existing records. Written immediately as one frame and
+    /// committed by the next `flush`.
     pub fn add_groups(&mut self, name: &str, groups: Grouping) -> Result<()> {
-        self.ensure_writable_for_append()?;
-        let num_records = self.len();
+        self.ensure_writable()?;
         let (mmap, path) = (self.data_mmap.as_ref(), &self.path);
-        self.extensions
-            .add_groups(name, groups, num_records, |offset, len| {
-                read_section(mmap, path, offset, len)
-            })
+        let chunk =
+            self.extensions
+                .encode_groups_chunk(name, &groups, self.len(), |offset, len| {
+                    read_section(mmap, path, offset, len)
+                })?;
+        let frame = self.write_metadata_frame(FRAME_GROUPS, &chunk)?;
+        self.extensions.push_groups(name, groups, frame);
+        Ok(())
     }
 
     // -- Accessors -----------------------------------------------------------
@@ -1155,6 +1218,8 @@ mod tests {
             index_len: 0,
             extensions_offset: 0,
             extensions_len: 0,
+            flags: 0,
+            data_end: 0,
         };
         let slot = encode_legacy_v2_header_slot(header);
         let mut file = File::create(&path).unwrap();
@@ -1225,7 +1290,8 @@ mod tests {
             db.flush().unwrap(); // gen=2 (slot A)
         }
 
-        // Corrupt the latest header slot (slot A). Open should fall back to slot B.
+        // Corrupt the latest header slot. The other slot was marked as writing
+        // when the second session started, so open recovers from the frames.
         {
             let mut file = OpenOptions::new()
                 .read(true)
@@ -1243,51 +1309,39 @@ mod tests {
         }
 
         let mut db = AtomDatabase::open(&path).unwrap();
-        assert_eq!(db.len(), 1);
-        let mol = db.get_molecule(0).unwrap();
-        assert_eq!(mol.atomic_numbers[0], 6);
+        assert_eq!(db.len(), 2);
+        assert_eq!(db.get_molecule(0).unwrap().atomic_numbers[0], 6);
+        assert_eq!(db.get_molecule(1).unwrap().atomic_numbers[0], 8);
     }
 
     #[test]
-    fn test_truncate_uncommitted_tail_on_write() {
+    fn test_garbage_after_commit_is_dropped_by_next_flush() {
         let temp = NamedTempFile::new().unwrap();
         let path = temp.path().to_path_buf();
-
-        let compression = CompressionType::None;
         let mol1 = molecule_from_atoms(vec![Atom::new(0.0, 0.0, 0.0, 6)]);
-
-        // Create a committed database state with a single molecule.
-        {
-            let mut db = AtomDatabase::create(&path, compression).unwrap();
-            db.add_molecule(&mol1).unwrap();
-            db.flush().unwrap();
-        }
-
-        let committed_size = std::fs::metadata(&path).unwrap().len();
-
-        // Simulate an uncommitted tail (e.g., crash during a write) by appending garbage.
-        {
-            let mut file = OpenOptions::new().append(true).open(&path).unwrap();
-            file.write_all(&[0u8; 123]).unwrap();
-            file.flush().unwrap();
-        }
-
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().len(),
-            committed_size + 123
-        );
-
-        // Opening + writing should truncate the uncommitted tail before appending new data.
-        let mut db = AtomDatabase::open(&path).unwrap();
         let mol2 = molecule_from_atoms(vec![Atom::new(1.0, 2.0, 3.0, 8)]);
-        let mol2_bytes = serialize_molecule_soa(&mol2, db.record_format()).unwrap();
-        let mol2_compressed = compress(&mol2_bytes, compression).unwrap();
-        db.add_molecule(&mol2).unwrap();
 
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().len(),
-            committed_size + (mol2_compressed.len() as u64)
-        );
+        let reference = NamedTempFile::new().unwrap();
+        let mut db = AtomDatabase::create(reference.path(), CompressionType::None).unwrap();
+        db.add_molecules(&[&mol1, &mol2]).unwrap();
+        db.flush().unwrap();
+
+        let mut db = AtomDatabase::create(&path, CompressionType::None).unwrap();
+        db.add_molecule(&mol1).unwrap();
+        db.flush().unwrap();
+        // Simulate an interrupted write from another process.
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(&[0u8; 123]).unwrap();
+
+        let mut db = AtomDatabase::open(&path).unwrap();
+        db.add_molecule(&mol2).unwrap();
+        db.flush().unwrap();
+
+        let size = |p: &Path| std::fs::metadata(p).unwrap().len();
+        assert_eq!(size(&path), size(reference.path()));
+        let mut db = AtomDatabase::open(&path).unwrap();
+        assert_eq!(db.len(), 2);
+        assert_eq!(db.get_molecule(1).unwrap().atomic_numbers[0], 8);
     }
 
     #[test]

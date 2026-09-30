@@ -19,6 +19,7 @@ bytemuck = { version = "1.14", features = ["derive"] }
 memmap2 = "0.9"
 rayon = "1.8"
 thiserror = "1.0"
+crc32fast = "1.4"
 
 # Compression
 zstd = "0.13"

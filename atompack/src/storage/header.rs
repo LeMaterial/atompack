@@ -13,6 +13,10 @@ pub(super) struct Header {
     pub(super) index_len: u64,
     pub(super) extensions_offset: u64,
     pub(super) extensions_len: u64,
+    /// `HEADER_FRAMED` / `HEADER_WRITING` bits.
+    pub(super) flags: u32,
+    /// End of the frames region (framed files only).
+    pub(super) data_end: u64,
 }
 
 /// Simple corruption detector (not cryptographic). https://en.wikipedia.org/wiki/Adler-32
@@ -54,6 +58,8 @@ pub(super) fn encode_header_slot(header: Header) -> [u8; HEADER_SLOT_SIZE] {
     // Extensions directory (groups, ...): also in bytes older readers ignore.
     slot[76..84].copy_from_slice(&header.extensions_offset.to_le_bytes());
     slot[84..92].copy_from_slice(&header.extensions_len.to_le_bytes());
+    slot[92..96].copy_from_slice(&header.flags.to_le_bytes());
+    slot[96..104].copy_from_slice(&header.data_end.to_le_bytes());
 
     let checksum = adler32(&slot[..HEADER_SLOT_SIZE - 4]);
     slot[HEADER_SLOT_SIZE - 4..HEADER_SLOT_SIZE].copy_from_slice(&checksum.to_le_bytes());
@@ -92,6 +98,8 @@ fn decode_header_slot(slot: &[u8; HEADER_SLOT_SIZE], file_size: u64) -> Option<H
     let schema_len = u64::from_le_bytes(slot[68..76].try_into().ok()?);
     let extensions_offset = u64::from_le_bytes(slot[76..84].try_into().ok()?);
     let extensions_len = u64::from_le_bytes(slot[84..92].try_into().ok()?);
+    let flags = u32::from_le_bytes(slot[92..96].try_into().ok()?);
+    let data_end = u64::from_le_bytes(slot[96..104].try_into().ok()?);
 
     let compression = match compression_type {
         0 => CompressionType::None,
@@ -102,6 +110,31 @@ fn decode_header_slot(slot: &[u8; HEADER_SLOT_SIZE], file_size: u64) -> Option<H
 
     if data_start < HEADER_REGION_SIZE || data_start > file_size {
         return None;
+    }
+
+    let framed = flags & HEADER_FRAMED != 0;
+    if framed && (data_end < data_start || data_end > file_size) {
+        return None;
+    }
+    let header = Header {
+        generation,
+        data_start,
+        num_molecules,
+        compression,
+        record_format,
+        schema_offset,
+        schema_len,
+        index_offset,
+        index_len,
+        extensions_offset,
+        extensions_len,
+        flags,
+        data_end,
+    };
+    // A writing slot has no committed metadata: readers rebuild it from the
+    // frames. Its index fields are deliberately invalid for older versions.
+    if flags & HEADER_WRITING != 0 {
+        return framed.then_some(header);
     }
 
     for (offset, len) in [
@@ -139,19 +172,7 @@ fn decode_header_slot(slot: &[u8; HEADER_SLOT_SIZE], file_size: u64) -> Option<H
         }
     }
 
-    Some(Header {
-        generation,
-        data_start,
-        num_molecules,
-        compression,
-        record_format,
-        schema_offset,
-        schema_len,
-        index_offset,
-        index_len,
-        extensions_offset,
-        extensions_len,
-    })
+    Some(header)
 }
 
 pub(super) fn read_best_header(file: &mut File) -> Result<Header> {

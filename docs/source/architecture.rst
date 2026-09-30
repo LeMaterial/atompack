@@ -158,61 +158,64 @@ Storage Layout
 The on-disk format lives in ``atompack/src/storage/`` and currently uses:
 
 1. two 4 KiB header slots
-2. a data region containing molecule records
-3. optional sections written on ``flush()``: the schema lock and an extensions directory
-4. a trailing index written on ``flush()``
+2. a data region of framed entries: molecule records, schema changes, and group chunks
+3. a metadata directory and the index, written after the last frame by ``flush()``
 
 Each header slot stores the format version, generation number, index location, molecule count,
 record format, codec metadata, and a checksum. On open, Atompack reads both slots and chooses the
 newest valid one.
 
+Every entry in the data region starts with a 20-byte frame header: kind, payload length,
+uncompressed length, atom count, and a CRC32 of the header and payload. Index entries point at the
+payload, so reads never see frame headers. The directory and index after the last frame are a
+cache that can always be rebuilt from the frames.
+
 This design gives Atompack its main operational properties:
 
-- appends stay simple because new records are written sequentially
-- ``flush()`` publishes a new index snapshot atomically enough for crash recovery
-- molecule lookup is O(1) through the trailing index
+- molecule lookup is O(1) through the index
+- files stay compact however often ``flush()`` is called
+- if a writing process stops before flushing, the records it wrote are recovered on the next open
 
 .. code-block:: text
 
    +---------------------------------------------------------------+
    | Header slot A (4 KiB)                                         |
-   | - magic + version                                             |
-   | - generation                                                  |
-   | - index offset / length                                       |
-   | - molecule count                                              |
-   | - record / codec metadata                                     |
+   | - magic + version, generation, flags                          |
+   | - index / directory / schema locations, molecule count        |
+   | - record / codec metadata, end of the data region             |
    | - checksum                                                    |
    +---------------------------------------------------------------+
    | Header slot B (4 KiB)                                         |
    | - same fields, alternate commit target                        |
    +---------------------------------------------------------------+
-   | Data region                                                   |
+   | Data region (framed entries)                                  |
+   | - schema: record format + schema lock                         |
    | - record 0: positions, atomic_numbers, builtin/custom fields  |
-   | - record 1: ...                                               |
-   | - ...                                                         |
-   | - record N-1                                                  |
+   | - record 1 ... record N-1                                     |
+   | - groups chunk (one per add_groups call)                      |
    +---------------------------------------------------------------+
-   | Schema lock, extensions directory, groups (when present)      |
+   | Metadata directory: location of every non-record frame        |
    +---------------------------------------------------------------+
-   | Trailing index                                                |
+   | Index                                                         |
    | - count                                                       |
-   | - per-record offset                                           |
-   | - compressed size                                             |
-   | - uncompressed size                                           |
-   | - atom count                                                  |
+   | - per-record offset, compressed size, uncompressed size,      |
+   |   atom count                                                  |
    +---------------------------------------------------------------+
 
-At commit time, Atompack writes the index first and then updates the newer valid header slot. On
-open, it reads both header slots and chooses the highest valid generation.
+The first write after a flush marks both header slots as "writing" and then writes new frames over
+the old directory and index. ``flush()`` writes a new directory and index after the last frame,
+truncates anything beyond them, and commits the header. If a writing process stops before its
+next flush, opening the file scans the frames up to the first incomplete or corrupted one and
+rebuilds the index, schema, and directory from them.
 
-The schema lock and the extensions directory are referenced from header bytes that older readers
-ignore, so they did not require a format version bump. The extensions directory maps tags to
-sections; readers skip tags they do not know and writers keep them.
+Files at rest keep the version 2 layout, so Atompack 0.4 reads them. Older versions refuse a file
+in the writing state instead of reading stale metadata. Files last written by an older version
+have no framed flag; Atompack keeps appending to them after their last commit, as before.
 
-The ``groups`` extension stores named groupings of record indices in CSR form (per-group offsets,
-member record indices, optional role ids) plus one column per group property. Records are
-referenced, not copied, so a record can belong to many groups. The section is decoded on first
-access and only rewritten by ``flush()`` when groups changed.
+Groups are stored as chunks: each ``add_groups`` call writes one frame with a CSR encoding (per-group
+offsets, member record indices, optional role ids) plus one column per group property, and a
+grouping is the concatenation of its chunks. Records are referenced, not copied, so a record can
+belong to many groups. Groups are decoded on first access.
 
 Record Shape
 ------------
@@ -257,12 +260,12 @@ Write Path
 
 When a file is opened writable:
 
-- new molecules are appended to the end of the file
+- new molecules are written as frames after the last committed frame
 - batch ingestion paths can serialize records from numpy arrays directly
-- ``flush()`` rewrites the trailing index and advances the committed header generation
+- ``flush()`` writes the index after the last frame and advances the committed header generation
 
-If the file contains an uncommitted tail after a crash or interrupted write, writable open will
-truncate back to the last committed state before continuing.
+If a writing process stops before flushing, the next open recovers every complete frame, and a
+writable open continues after the last one.
 
 Current Tradeoffs
 -----------------
