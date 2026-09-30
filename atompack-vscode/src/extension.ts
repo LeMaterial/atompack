@@ -26,6 +26,7 @@ class AtpEditorProvider implements vscode.CustomReadonlyEditorProvider<AtpDocume
   }
 
   resolveCustomEditor(document: AtpDocument, panel: vscode.WebviewPanel) {
+    panel.iconPath = vscode.Uri.joinPath(this.context.extensionUri, `media`, `icon.png`)
     const webview = panel.webview
     const dist = vscode.Uri.joinPath(this.context.extensionUri, `dist`, `webview`)
     webview.options = { enableScripts: true, localResourceRoots: [dist] }

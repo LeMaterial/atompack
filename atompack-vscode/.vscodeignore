@@ -3,5 +3,6 @@
 dist/reader.js
 dist/scan.js
 !package.json
+!media/icon.png
 !README.md
 !LICENSE*
