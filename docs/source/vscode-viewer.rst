@@ -7,7 +7,7 @@ The Atompack viewer opens ``.atp`` files inside VS Code. Move from a table of re
 atomic structures, inspect related records as groups, and use plots to select records
 for further analysis in Python.
 
-.. figure:: _static/img/viewer/compare.png
+.. figure:: _static/img/viewer/compare.webp
    :alt: Six labeled CO adsorption structures on Pt, Pd, Cu, Ni, Au, and Ag with synchronized cameras.
 
    Compare the members of one metal-series group with synchronized cameras.
@@ -47,7 +47,7 @@ illustrative adsorption energy below -1, enter::
 This selects 11 records. **copy #** copies their record numbers in table order as a
 Python list, ready for ``db.get_molecules(indices)``.
 
-.. figure:: _static/img/viewer/records.png
+.. figure:: _static/img/viewer/records.webp
    :alt: Eleven filtered CO-on-copper records beside the selected structure and its metadata.
 
    Composition and property filters connect the record table to a 3D preview.
@@ -59,7 +59,7 @@ In **Groups**, choose ``adsorption`` and filter **metal** to ``Cu`` and **adsorb
 ``CO``. The 20 matching groups each link an ``adsorbed`` structure, its clean ``slab``,
 and a ``gas`` reference. Select group 240 for the unstrained, on-top example.
 
-.. figure:: _static/img/viewer/groups.png
+.. figure:: _static/img/viewer/groups.webp
    :alt: A filtered adsorption group displaying the combined structure, copper slab, and gas-phase CO.
 
    Role labels preserve the relationship between the three records.
@@ -78,7 +78,7 @@ The 600 adsorption structures have both values. Drag a box to zoom, then click a
 record in the list or a point to see its structure. **Open in Records** carries the
 visible bounds and sort order into the paginated record table.
 
-.. figure:: _static/img/viewer/plots.png
+.. figure:: _static/img/viewer/plots.webp
    :alt: Adsorption energy versus maximum force, with 584 records in the zoomed region and a selected gold structure.
 
    A zoomed region links the property plot, record list, and selected structure.

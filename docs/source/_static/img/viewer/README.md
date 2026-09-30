@@ -8,14 +8,15 @@ profile and the CI-built `darwin-arm64` VSIX from commit
 Captured on 2026-09-30 in VS Code 1.139.1, dark theme, side panels hidden.
 The 2400 × 1600 captures were cropped to the viewer area
 (`x=106, y=190, width=2284, height=1344`), removing editor chrome and temporary paths.
-No interface elements or data were composited or retouched.
+No interface elements or data were composited or retouched. For the web, the crops were
+scaled to 1600 px wide and saved as WebP (`cwebp -q 90 -m 6 -sharp_yuv`), about 100 KB each.
 
 | Asset | View and selection | Suggested use |
 | --- | --- | --- |
-| `compare.png` | `metal_series` group 0; records 6, 146, 286, 426, 566, 706; three columns; synchronized cameras | README and walkthrough hero |
-| `groups.png` | `adsorption`, metal `Cu`, adsorbate `CO`, group 240; records 328, 327, 0 | Group relationships |
-| `records.png` | `formula = COCu27, adsorption_energy < -1`; 11 matches; record 287 | Filtering and inspection |
-| `plots.png` | Scatter `adsorption_energy` versus `fmax`; zoomed to 584 records; record 606 | Plot selection workflow |
+| `compare.webp` | `metal_series` group 0; records 6, 146, 286, 426, 566, 706; three columns; synchronized cameras | README and walkthrough hero |
+| `groups.webp` | `adsorption`, metal `Cu`, adsorbate `CO`, group 240; records 328, 327, 0 | Group relationships |
+| `records.webp` | `formula = COCu27, adsorption_energy < -1`; 11 matches; record 287 | Filtering and inspection |
+| `plots.webp` | Scatter `adsorption_energy` versus `fmax`; zoomed to 584 records; record 606 | Plot selection workflow |
 
 Force arrows are disabled for clarity. Structures retain the viewer's default camera
 and periodic images. The demo has 845 records: 5 gas references, 30 clean slabs,

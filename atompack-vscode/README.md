@@ -4,7 +4,7 @@ Open `.atp` databases in VS Code to browse records and groups, plot properties, 
 view atomic structures. The viewer uses the native Atompack mmap reader; installing
 the extension requires neither Rust nor Python.
 
-![Six-metal adsorption comparison](https://raw.githubusercontent.com/LeMaterial/atompack/main/docs/source/_static/img/viewer/compare.png)
+![Six-metal adsorption comparison](https://raw.githubusercontent.com/LeMaterial/atompack/main/docs/source/_static/img/viewer/compare.webp)
 
 Try the [catalysis demo](https://github.com/LeMaterial/atompack/blob/main/docs/source/_static/data/catalysis-demo.atp) with the
 [viewer walkthrough](https://entalpic-atompack.readthedocs-hosted.com/en/latest/vscode-viewer.html). Its 845 structures include
@@ -17,12 +17,12 @@ four groupings; energies and forces are synthetic demonstration values.
 metadata. **copy #** copies the matching record numbers as a Python list, ready for
 `db.get_molecules(indices)`.
 
-![Eleven filtered CO-on-copper records beside the selected structure and its metadata](https://raw.githubusercontent.com/LeMaterial/atompack/main/docs/source/_static/img/viewer/records.png)
+![Eleven filtered CO-on-copper records beside the selected structure and its metadata](https://raw.githubusercontent.com/LeMaterial/atompack/main/docs/source/_static/img/viewer/records.webp)
 
 **Groups.** Browse related records with their roles, such as an adsorbed structure, its
 clean slab, and the gas-phase reference.
 
-![A filtered adsorption group displaying the combined structure, copper slab, and gas-phase CO](https://raw.githubusercontent.com/LeMaterial/atompack/main/docs/source/_static/img/viewer/groups.png)
+![A filtered adsorption group displaying the combined structure, copper slab, and gas-phase CO](https://raw.githubusercontent.com/LeMaterial/atompack/main/docs/source/_static/img/viewer/groups.webp)
 
 **Compare.** Place up to 12 records or group members side by side, as in the image
 above. With **sync cameras** on, rotating, panning, or zooming one pane moves the others,
@@ -32,7 +32,7 @@ while each stays framed on its own structure. **Reset view** reframes every pane
 click a point to see its structure, and **Open in Records** to carry the visible bounds
 and sort order into the record table.
 
-![Adsorption energy versus maximum force, with 584 records in the zoomed region and a selected gold structure](https://raw.githubusercontent.com/LeMaterial/atompack/main/docs/source/_static/img/viewer/plots.png)
+![Adsorption energy versus maximum force, with 584 records in the zoomed region and a selected gold structure](https://raw.githubusercontent.com/LeMaterial/atompack/main/docs/source/_static/img/viewer/plots.webp)
 
 ## Install
 

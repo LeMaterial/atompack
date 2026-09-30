@@ -113,7 +113,7 @@ the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemN
 or with `code --install-extension Ramlaoui.atompack-vscode`, then open any `.atp` file; it also
 works on Remote SSH, WSL, and Dev Containers hosts without Python or Rust.
 
-![CO adsorption compared across six metals in the Atompack VS Code viewer](docs/source/_static/img/viewer/compare.png)
+![CO adsorption compared across six metals in the Atompack VS Code viewer](docs/source/_static/img/viewer/compare.webp)
 
 Try the [845-record catalysis demo](docs/source/_static/data/catalysis-demo.atp) and follow the
 [viewer walkthrough](docs/source/vscode-viewer.rst). The demo includes adsorption groups,
