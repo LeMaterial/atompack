@@ -4,6 +4,12 @@ Open `.atp` databases in VS Code to browse records and groups, plot properties, 
 view atomic structures. The viewer uses the native Atompack mmap reader; installing
 the extension requires neither Rust nor Python.
 
+![Six-metal adsorption comparison](https://raw.githubusercontent.com/LeMaterial/atompack/main/docs/source/_static/img/viewer/compare.png)
+
+Try the [catalysis demo](https://github.com/LeMaterial/atompack/blob/main/docs/source/_static/data/catalysis-demo.atp) with the
+[viewer walkthrough](https://entalpic-atompack.readthedocs-hosted.com/en/latest/vscode-viewer.html). Its 845 structures include
+four groupings; energies and forces are synthetic demonstration values.
+
 ## Install
 
 Download the VSIX matching your extension host from the **VS Code extension** GitHub

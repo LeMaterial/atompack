@@ -11,6 +11,7 @@ Atompack
    getting-started
    performance
    huggingface
+   vscode-viewer
    architecture
    contributing
    rust-api
@@ -45,6 +46,12 @@ access reads, ASE helpers, and optional compression when size matters.
       :link-type: doc
 
       Data model, storage layout, read/write modes, and current tradeoffs.
+
+   .. grid-item-card:: VS Code Viewer
+      :link: vscode-viewer
+      :link-type: doc
+
+      Explore structures, filter records, plot properties, and compare group members.
 
    .. grid-item-card:: Python API Reference
       :link: autoapi/index

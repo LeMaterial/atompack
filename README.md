@@ -102,6 +102,17 @@ db = atompack.hub.open_path(local_path)
 - Hugging Face Hub helpers for upload, download, and read-only reopening
 - Optional compression with `none`, `lz4`, and `zstd`
 
+## Explore datasets in VS Code
+
+Browse `.atp` records, inspect structures in 3D, filter properties, and compare group members
+with synchronized cameras using the [Atompack viewer](atompack-vscode/README.md).
+
+![CO adsorption compared across six metals in the Atompack VS Code viewer](docs/source/_static/img/viewer/compare.png)
+
+Try the [845-record catalysis demo](docs/source/_static/data/catalysis-demo.atp) and follow the
+[viewer walkthrough](docs/source/vscode-viewer.rst). The demo includes adsorption groups,
+site comparisons, metal series, and relaxation trajectories; its energies and forces are synthetic.
+
 ## Performance
 
 Atompack is optimized for read-heavy atomistic ML workloads: random indexed reads, multiprocessing
