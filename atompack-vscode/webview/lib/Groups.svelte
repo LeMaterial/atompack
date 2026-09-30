@@ -152,7 +152,12 @@
         style="grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); grid-auto-rows: minmax(16rem, 1fr)"
       >
         {#each list.slice(0, MAX_COMPARE) as m, i (i)}
-          <Viewer index={m.record} label={m.role ?? undefined} camera={sync ? camera : undefined} />
+          <Viewer
+            index={m.record}
+            label={m.role ?? undefined}
+            camera={sync ? camera : undefined}
+            projection="perspective"
+          />
         {/each}
       </div>
       {#if list.length > MAX_COMPARE}

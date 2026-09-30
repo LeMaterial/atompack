@@ -54,5 +54,8 @@ export async function copy_records(indices: ArrayLike<number>) {
   return `copied ${indices.length.toLocaleString()} record numbers`
 }
 
-/** Shared camera pose for synchronized viewers (same coordinate frame). */
-export type CameraPose = { position?: Vec3; target?: Vec3 }
+/**
+ * Shared camera of synchronized viewers, relative to each structure's frame: the view
+ * direction, and the distance and pan offset in units of the structure's size.
+ */
+export type CameraPose = { direction?: Vec3; distance?: number; offset?: Vec3 }

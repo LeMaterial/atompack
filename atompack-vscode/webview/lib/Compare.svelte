@@ -6,6 +6,8 @@
   let camera = $state<CameraPose>({})
   let columns = $state(3)
   let note = $state(``)
+  // Panes keep their own placement once made, so a reset remounts them to re-frame.
+  let resets = $state(0)
 </script>
 
 <div class="flex h-full min-h-0 flex-col">
@@ -15,7 +17,7 @@
     <label class="flex items-center gap-1">
       columns <input type="range" min="1" max="6" bind:value={columns} />
     </label>
-    <button class="btn" onclick={() => (camera = {})}>Reset view</button>
+    <button class="btn" onclick={() => ((camera = {}), resets++)}>Reset view</button>
     {#if note}<span class="text-muted">{note}</span>{/if}
     <button
       class="btn ml-auto"
@@ -34,13 +36,15 @@
       class="grid min-h-0 flex-1 gap-2 overflow-auto p-2"
       style="grid-template-columns: repeat({columns}, minmax(0, 1fr)); grid-auto-rows: minmax(16rem, 1fr)"
     >
-      {#each compare.records as index (index)}
-        <Viewer {index} label={compare.labels[index]} camera={sync ? camera : undefined}>
-          {#snippet header()}
-            <button class="btn" title="Remove" onclick={() => toggle_compare(index)}>✕</button>
-          {/snippet}
-        </Viewer>
-      {/each}
+      {#key resets}
+        {#each compare.records as index (index)}
+          <Viewer {index} label={compare.labels[index]} camera={sync ? camera : undefined} projection="perspective">
+            {#snippet header()}
+              <button class="btn" title="Remove" onclick={() => toggle_compare(index)}>✕</button>
+            {/snippet}
+          </Viewer>
+        {/each}
+      {/key}
     </div>
   {/if}
 </div>
