@@ -49,7 +49,8 @@ test(`temporary copies are removed after close and failed open`, async () => {
   assert.deepEqual(readdirSync(temporary), [])
 })
 
-test(`a file truncated while open stops only the reader process`, async () => {
+// Windows refuses to truncate a mapped file, so only POSIX systems can hit SIGBUS.
+test(`a file truncated while open stops only the reader process`, { skip: process.platform === `win32` }, async () => {
   const dir = mkdtempSync(join(tmpdir(), `atompack-truncate-`))
   const file = join(dir, `live.atp`)
   copyFileSync(fixture, file)
