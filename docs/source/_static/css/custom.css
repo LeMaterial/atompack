@@ -1,5 +1,10 @@
 /* Copyright 2025 Entalpic */
 
+.sy-head-brand img {
+    width: 40px;
+    height: 40px;
+}
+
 :root {
     --custom-c-dimmed: rgb(162, 162, 162);
     --entalpic-purpule-1: #5b32eb;
