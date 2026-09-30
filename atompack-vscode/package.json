@@ -4,7 +4,7 @@
   "description": "Browse and visualize atompack (.atp) databases",
   "icon": "media/icon.png",
   "version": "0.1.0",
-  "publisher": "atompack",
+  "publisher": "Ramlaoui",
   "license": "Apache-2.0",
   "private": true,
   "engines": {
