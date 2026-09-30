@@ -3,6 +3,7 @@ name: VS Code extension
 on:
   push:
     branches: [main]
+    tags: ['atompack-vscode-v*']
     paths:
       - 'atompack/**'
       - 'atompack-node/**'
@@ -18,13 +19,39 @@ on:
       - '.github/workflows/vscode.yml'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/atompack-vscode-v') }}
 
 jobs:
+  validate-version:
+    name: Validate extension version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify release tag matches package version
+        run: |
+          node --input-type=module <<'JS'
+          import { readFileSync } from 'node:fs'
+          const { version } = JSON.parse(readFileSync('atompack-vscode/package.json', 'utf8'))
+          if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) {
+            throw new Error(`Marketplace requires a major.minor.patch version, got ${version}`)
+          }
+          if (process.env.GITHUB_REF_TYPE === 'tag' && process.env.GITHUB_REF_NAME !== `atompack-vscode-v${version}`) {
+            throw new Error(`Release tag must be atompack-vscode-v${version}`)
+          }
+          console.log(`Extension version: ${version}`)
+          JS
+
   package:
     name: VSIX (${{ matrix.target }})
+    needs: validate-version
     strategy:
       fail-fast: false
       matrix:
@@ -67,3 +94,59 @@ jobs:
           name: atompack-vscode-${{ matrix.target }}
           path: atompack-vscode/*-${{ matrix.target }}-*.vsix
           if-no-files-found: error
+
+  publish:
+    name: Publish to VS Code Marketplace
+    if: startsWith(github.ref, 'refs/tags/atompack-vscode-v')
+    needs: [validate-version, package]
+    runs-on: ubuntu-latest
+    environment: vscode-marketplace
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: atompack-vscode-marketplace
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: atompack-vscode/package-lock.json
+      - run: npm ci
+        working-directory: atompack-vscode
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: atompack-vscode-*
+          merge-multiple: true
+          path: release
+      - name: Get short-lived Marketplace credential
+        uses: actions/github-script@v7
+        with:
+          # vsce 4.0.0 predates the final exchange contract. Use the upstream
+          # protocol until a release includes microsoft/vscode-vsce@c960f2e.
+          script: |
+            const { publisher } = require('./atompack-vscode/package.json')
+            const token = await core.getIDToken('marketplace.visualstudio.com')
+            const response = await fetch('https://marketplace.visualstudio.com/_apis/gallery/token?api-version=7.2-preview.1', {
+              method: 'POST',
+              headers: {
+                Accept: 'application/json',
+                Authorization: `FederatedToken ${token}`,
+                'Content-Type': 'application/json',
+                'User-Agent': 'vsce',
+              },
+              body: JSON.stringify({ publisherName: publisher }),
+            })
+            if (!response.ok) throw new Error(`Marketplace token exchange failed (${response.status}). Check the publisher's trusted publishing policy.`)
+            const { credential } = await response.json()
+            if (typeof credential !== 'string' || !credential) throw new Error('Marketplace returned no credential')
+            core.setSecret(credential)
+            core.exportVariable('VSCE_PAT', credential)
+      - name: Publish tested platform packages
+        working-directory: atompack-vscode
+        shell: bash
+        run: |
+          shopt -s failglob
+          npx --no-install vsce publish --skip-duplicate --packagePath ../release/*.vsix
