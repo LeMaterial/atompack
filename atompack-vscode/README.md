@@ -20,8 +20,7 @@ are not currently packaged.
 
 For Remote SSH, WSL, or Dev Containers, install into the remote workspace and choose
 the remote machine's OS and architecture. `extensionKind: workspace` runs the native
-reader alongside your files. CI builds downloadable packages on pull requests and
-main; extension release tags also publish those packages to the VS Code Marketplace.
+reader alongside your files.
 
 Local files are memory mapped read-only. Resources supplied by a virtual filesystem
 are copied into a private temporary directory, which is removed when the document
@@ -59,37 +58,3 @@ MatterViz renders structures in the webview and retains its own browser WASM ass
 
 To include a larger database in the reader and worker smoke tests, set `ATP_FILE`
 to its absolute path when running `npm test`.
-
-## Release to the VS Code Marketplace
-
-The **VS Code extension** workflow builds, tests, and packages all five supported
-platforms before publishing the resulting VSIX files. Pull requests, pushes to main,
-and manual runs on branches only build packages. Publishing runs on tags named
-`atompack-vscode-v<VERSION>`; the tag must match `version` in `package.json`.
-These tags are separate from the Rust/Python `v*` release tags.
-
-Before the first release, register the `publisher` ID from `package.json` (currently
-`atompack`) on the [Marketplace publisher management page](https://marketplace.visualstudio.com/manage).
-Configure its [GitHub trusted publishing policy](https://github.com/microsoft/vscode-vsce#trusted-publishing)
-for repository `LeMaterial/atompack`, workflow `vscode.yml`, and GitHub environment
-`vscode-marketplace`. Create that environment under repository **Settings → Environments**.
-Publishing uses GitHub OIDC and a short-lived Marketplace credential; no stored PAT
-or Azure credentials are required. The workflow performs the documented exchange
-directly because `vsce` 4.0.0 predates Microsoft's
-[final token-exchange contract](https://github.com/microsoft/vscode-vsce/commit/c960f2e97da3360899f2bfe93390fa4890c69327).
-Once a released CLI includes that fix, replace the exchange step with `vsce publish --oidc`.
-
-For example, after merging the extension and its `0.1.0` manifest into main:
-
-```sh
-git switch main
-git pull --ff-only
-git tag atompack-vscode-v0.1.0
-git push origin atompack-vscode-v0.1.0
-```
-
-For later releases, update `version` in `package.json` and `package-lock.json` together
-(for example, `npm version patch --no-git-tag-version` from `atompack-vscode/`), merge
-the change, then tag the matching version. If publishing stops after uploading some
-platforms, rerun the failed job: `--skip-duplicate` keeps already-published targets
-and publishes the remaining ones. Release runs are not canceled by newer builds.
