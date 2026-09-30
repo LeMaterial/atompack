@@ -1,11 +1,15 @@
-// Exercises the WASM reader through the same loader the extension uses.
+// Exercises the native reader through the same loader the extension uses.
 // Fixture from test/make_fixture.py; `npm test` bundles src/reader.ts first.
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import { AtpReader, bytesSource, fileSource } from '../dist/reader.js'
 
-const fixture = new URL(`fixtures/groups.atp`, import.meta.url).pathname
+const fixture = fileURLToPath(new URL(`fixtures/groups.atp`, import.meta.url))
 
 for (const [kind, open] of [
   [`file`, () => fileSource(fixture)],
@@ -85,11 +89,35 @@ test(`several readers stay independent`, () => {
   b.dispose()
 })
 
+test(`temporary copies are removed after close and failed open`, () => {
+  const temporary = mkdtempSync(join(tmpdir(), `atompack-cleanup-test-`))
+  try {
+    // Isolate the temp directory from readers in concurrently running test files.
+    execFileSync(process.execPath, ['--input-type=module', '-e', `
+      import assert from 'node:assert/strict'
+      import { readFileSync, readdirSync } from 'node:fs'
+      import { AtpReader, bytesSource } from ${JSON.stringify(new URL('../dist/reader.js', import.meta.url).href)}
+      const reader = new AtpReader(bytesSource(readFileSync(${JSON.stringify(fixture)})))
+      assert.equal(readdirSync(${JSON.stringify(temporary)}).length, 1)
+      assert.equal(reader.overview().num_records, 6)
+      reader.dispose()
+      reader.dispose()
+      assert.deepEqual(readdirSync(${JSON.stringify(temporary)}), [])
+      assert.throws(() => new AtpReader(bytesSource(new Uint8Array(10000))))
+      assert.deepEqual(readdirSync(${JSON.stringify(temporary)}), [])
+    `], { env: { ...process.env, TMPDIR: temporary, TMP: temporary, TEMP: temporary } })
+    assert.deepEqual(readdirSync(temporary), [])
+  } finally {
+    rmSync(temporary, { recursive: true, force: true })
+  }
+  assert.equal(existsSync(temporary), false)
+})
+
 // Optional smoke test on a real database: ATP_FILE=/path/to/file.atp npm test
 test(`real file smoke`, { skip: !process.env.ATP_FILE }, () => {
   const reader = new AtpReader(fileSource(process.env.ATP_FILE))
   const { num_records } = reader.overview()
-  for (const i of [0, Math.floor(num_records / 2), num_records - 1]) {
+  for (const i of num_records ? [0, Math.floor(num_records / 2), num_records - 1] : []) {
     const mol = reader.molecule(i)
     assert.equal(mol.positions.length, 3 * mol.numbers.length)
   }

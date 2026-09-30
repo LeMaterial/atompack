@@ -1,0 +1,21 @@
+[package]
+name = "atompack-node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+# Exercised in a real Node host by atompack-vscode/test.
+test = false
+doctest = false
+
+[dependencies]
+atompack = { path = "../atompack" }
+napi = { version = "3", default-features = false, features = ["napi8", "dyn-symbols", "serde-json"] }
+napi-derive = "3"
+serde_json = "1"
+
+[build-dependencies]
+napi-build = "2"

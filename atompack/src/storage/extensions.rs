@@ -54,7 +54,7 @@ impl Extensions {
     /// Read the directory at `span` and check every section lies in
     /// `data_start..committed_end`.
     pub(super) fn open(
-        src: &(impl ReadAt + ?Sized),
+        file: &mut File,
         span: (u64, u64),
         data_start: u64,
         committed_end: u64,
@@ -63,7 +63,10 @@ impl Extensions {
         if len == 0 {
             return Ok(Self::default());
         }
-        let directory = decode_extensions(&src.read_vec(offset, len)?)?;
+        file.seek(SeekFrom::Start(offset))?;
+        let mut bytes = vec![0u8; len as usize];
+        file.read_exact(&mut bytes)?;
+        let directory = decode_extensions(&bytes)?;
         for ext in &directory {
             let end = ext.offset.checked_add(ext.len);
             if ext.offset < data_start || end.is_none_or(|end| end > committed_end) {

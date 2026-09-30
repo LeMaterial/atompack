@@ -14,7 +14,7 @@ export type BinaryColumns = {
 
 // At most half the cores, and no more than 4.
 const WORKERS = Math.min(4, Math.max(1, Math.floor(os.availableParallelism() / 2)))
-// Workers hold a WASM instance each; free them once a scan is over.
+// Workers hold an independent native reader each; free them once a scan is over.
 const IDLE_MS = 10_000
 
 /** Float32 with NaN for missing values: half the bytes of f64, and far fewer than JSON. */

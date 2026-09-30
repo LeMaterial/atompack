@@ -1,0 +1,45 @@
+# Atompack Viewer
+
+Open `.atp` databases in VS Code to browse records and groups, plot properties, and
+view atomic structures. The viewer uses the native Atompack mmap reader; installing
+the extension requires neither Rust nor Python.
+
+## Install
+
+Download the VSIX matching your extension host from the **VS Code extension** GitHub
+Actions artifacts, then run **Extensions: Install from VSIX** in VS Code. Packages
+are built for macOS (Intel and Apple Silicon), Linux with glibc 2.35 or newer (x64
+and ARM64), and Windows x64. Windows ARM64, Alpine/musl, and browser-only VS Code
+are not currently packaged.
+
+For Remote SSH, WSL, or Dev Containers, install into the remote workspace and choose
+the remote machine's OS and architecture. `extensionKind: workspace` runs the native
+reader alongside your files. The repository's workflow builds downloadable packages;
+it does not publish to the Marketplace.
+
+Local files are memory mapped read-only. Resources supplied by a virtual filesystem
+are copied into a private temporary directory, which is removed when the document
+closes. Treat open databases as immutable: close the viewer before modifying or
+replacing the underlying file.
+
+## Develop
+
+Install Node.js 22.13+ and stable Rust with the native C/C++ build tools for your OS.
+From `atompack-vscode/`:
+
+```sh
+npm ci
+npm run build
+npm run check
+npm test
+npm run package
+```
+
+Packaging automatically tags the VSIX for the current OS and CPU. CI builds and
+tests each supported target on a matching runner. The Node-API 8 binding lives in
+`atompack-node/` and calls the existing `AtomDatabase` API without modifying the
+core library. Plot scans run in Node worker threads with independent readers.
+MatterViz renders structures in the webview and retains its own browser WASM assets.
+
+To include a larger database in the reader and worker smoke tests, set `ATP_FILE`
+to its absolute path when running `npm test`.

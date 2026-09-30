@@ -1,18 +1,11 @@
-//! WebAssembly reader for atompack files, driven by a JS host.
-//!
-//! The host imports `atompack.read_at(source, offset, len, dst) -> u32` (0 on
-//! success), which copies a byte range of the file it registered as `source`
-//! into wasm memory. Every exported call leaves a JSON reply, `{"ok": ...}` or
-//! `{"error": "..."}`, readable through `reply_ptr()` / `reply_len()`.
-//! Groupings are addressed by their position in `overview().groupings`.
+//! Viewer projections over the existing native database API.
 
-use atompack::storage::type_tag_name;
 use atompack::types::TensorData;
-use atompack::{AtomReader, GroupColumn, Molecule, PropertyValue, ReadAt};
+use atompack::{AtomDatabase, GroupColumn, Molecule, PropertyValue};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 
-pub fn overview<R: ReadAt>(reader: &AtomReader<R>) -> atompack::Result<Value> {
+pub fn overview(reader: &AtomDatabase) -> atompack::Result<Value> {
     let compression = match reader.compression() {
         atompack::compression::CompressionType::None => json!({"kind": "none"}),
         atompack::compression::CompressionType::Lz4 => json!({"kind": "lz4"}),
@@ -73,14 +66,10 @@ pub fn overview<R: ReadAt>(reader: &AtomReader<R>) -> atompack::Result<Value> {
 }
 
 /// One table row per record: counts, composition and scalar values.
-pub fn records<R: ReadAt>(
-    reader: &AtomReader<R>,
-    start: usize,
-    count: usize,
-) -> atompack::Result<Value> {
+pub fn records(reader: &AtomDatabase, start: usize, count: usize) -> atompack::Result<Value> {
     let end = start.saturating_add(count).min(reader.len());
     let rows: Vec<Value> = reader
-        .get_molecules(start.min(end)..end)?
+        .get_molecules(&(start.min(end)..end).collect::<Vec<_>>())?
         .iter()
         .zip(start..)
         .map(|(mol, index)| {
@@ -108,8 +97,8 @@ pub fn records<R: ReadAt>(
 /// Numeric per-record values for plotting, columnar: `{key: [value or null, ...]}`.
 /// Built-ins (`n_atoms`, `energy`, `energy_per_atom`, `fmax`) take precedence over same-named
 /// properties. `composition` holds `"Z:count"` pairs by atomic number, e.g. `"1:2 8:1"`.
-pub fn record_columns<R: ReadAt>(
-    reader: &AtomReader<R>,
+pub fn record_columns(
+    reader: &AtomDatabase,
     start: usize,
     count: usize,
 ) -> atompack::Result<Value> {
@@ -117,9 +106,9 @@ pub fn record_columns<R: ReadAt>(
     let start = start.min(end);
     let mut columns = BTreeMap::<String, Vec<Value>>::new();
     // Decode a few records at a time: only the values are kept, and holding a whole chunk of
-    // large structures could exhaust the 4 GiB WASM memory.
+    // large structures could otherwise exhaust memory.
     for batch in (start..end).step_by(64) {
-        let mols = reader.get_molecules(batch..(batch + 64).min(end))?;
+        let mols = reader.get_molecules(&(batch..(batch + 64).min(end)).collect::<Vec<_>>())?;
         for (j, mol) in mols.iter().enumerate() {
             let mut set = |key: &str, value: Value| {
                 columns
@@ -165,8 +154,8 @@ pub fn record_columns<R: ReadAt>(
 }
 
 /// Full record for rendering and inspection.
-pub fn molecule<R: ReadAt>(reader: &AtomReader<R>, index: usize) -> atompack::Result<Value> {
-    Ok(molecule_json(index, &reader.get_molecule(index)?))
+pub fn molecule(reader: &AtomDatabase, index: usize) -> atompack::Result<Value> {
+    Ok(molecule_json(index, &reader.get_molecules(&[index])?[0]))
 }
 
 fn molecule_json(index: usize, mol: &Molecule) -> Value {
@@ -193,8 +182,8 @@ fn molecule_json(index: usize, mol: &Molecule) -> Value {
 }
 
 /// A page of groups: members with roles, plus the group's properties.
-pub fn groups<R: ReadAt>(
-    reader: &AtomReader<R>,
+pub fn groups(
+    reader: &AtomDatabase,
     grouping: usize,
     start: usize,
     count: usize,
@@ -229,10 +218,7 @@ pub fn groups<R: ReadAt>(
 }
 
 /// All values of every property of a grouping (stored columnar, so cheap).
-pub fn group_columns<R: ReadAt>(
-    reader: &AtomReader<R>,
-    grouping: usize,
-) -> atompack::Result<Value> {
+pub fn group_columns(reader: &AtomDatabase, grouping: usize) -> atompack::Result<Value> {
     let columns: Map<String, Value> = grouping_at(reader, grouping)?
         .properties
         .iter()
@@ -248,10 +234,7 @@ pub fn group_columns<R: ReadAt>(
     Ok(Value::Object(columns))
 }
 
-fn grouping_at<R: ReadAt>(
-    reader: &AtomReader<R>,
-    index: usize,
-) -> atompack::Result<&atompack::Grouping> {
+fn grouping_at(reader: &AtomDatabase, index: usize) -> atompack::Result<&atompack::Grouping> {
     reader
         .groups()?
         .values()
@@ -301,125 +284,26 @@ fn summary(value: &PropertyValue) -> Value {
     json!(format!("[{}]", dims.join("×")))
 }
 
-#[cfg(target_arch = "wasm32")]
-mod host {
-    use super::*;
-    use std::cell::RefCell;
-    use std::collections::HashMap;
-
-    #[link(wasm_import_module = "atompack")]
-    unsafe extern "C" {
-        fn read_at(source: u32, offset: f64, len: u32, dst: *mut u8) -> u32;
-    }
-
-    struct HostSource {
-        id: u32,
-        size: u64,
-    }
-
-    impl ReadAt for HostSource {
-        fn size(&self) -> atompack::Result<u64> {
-            Ok(self.size)
-        }
-
-        fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> atompack::Result<()> {
-            let status =
-                unsafe { read_at(self.id, offset as f64, buf.len() as u32, buf.as_mut_ptr()) };
-            if status == 0 {
-                Ok(())
-            } else {
-                Err(std::io::Error::other(format!("host read failed at offset {offset}")).into())
-            }
-        }
-    }
-
-    thread_local! {
-        static READERS: RefCell<HashMap<u32, AtomReader<HostSource>>> = RefCell::default();
-        static REPLY: RefCell<Vec<u8>> = RefCell::default();
-    }
-
-    /// Store the reply; returns 0 on success, 1 on error.
-    fn reply(result: atompack::Result<Value>) -> u32 {
-        let (status, value) = match result {
-            Ok(value) => (0, json!({"ok": value})),
-            Err(err) => (1, json!({"error": err.to_string()})),
-        };
-        REPLY.with(|r| *r.borrow_mut() = serde_json::to_vec(&value).expect("JSON value"));
-        status
-    }
-
-    fn with_reader(
-        source: u32,
-        f: impl FnOnce(&AtomReader<HostSource>) -> atompack::Result<Value>,
-    ) -> u32 {
-        reply(READERS.with(|readers| match readers.borrow().get(&source) {
-            Some(reader) => f(reader),
-            None => Err(atompack::Error::InvalidData(format!(
-                "Source {source} is not open"
-            ))),
-        }))
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn reply_ptr() -> *const u8 {
-        REPLY.with(|r| r.borrow().as_ptr())
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn reply_len() -> u32 {
-        REPLY.with(|r| r.borrow().len() as u32)
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn open(source: u32, size: f64) -> u32 {
-        let opened = AtomReader::open(HostSource {
-            id: source,
-            size: size as u64,
-        });
-        reply(opened.map(|reader| {
-            READERS.with(|readers| readers.borrow_mut().insert(source, reader));
-            Value::Null
-        }))
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn close(source: u32) {
-        READERS.with(|readers| readers.borrow_mut().remove(&source));
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn overview(source: u32) -> u32 {
-        with_reader(source, super::overview)
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn records(source: u32, start: u32, count: u32) -> u32 {
-        with_reader(source, |r| {
-            super::records(r, start as usize, count as usize)
-        })
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn record_columns(source: u32, start: u32, count: u32) -> u32 {
-        with_reader(source, |r| {
-            super::record_columns(r, start as usize, count as usize)
-        })
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn molecule(source: u32, index: u32) -> u32 {
-        with_reader(source, |r| super::molecule(r, index as usize))
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn groups(source: u32, grouping: u32, start: u32, count: u32) -> u32 {
-        with_reader(source, |r| {
-            super::groups(r, grouping as usize, start as usize, count as usize)
-        })
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn group_columns(source: u32, grouping: u32) -> u32 {
-        with_reader(source, |r| super::group_columns(r, grouping as usize))
+fn type_tag_name(type_tag: u8) -> &'static str {
+    match type_tag {
+        0 => "float64",
+        1 => "int64",
+        2 => "string",
+        3 => "float64[]",
+        4 => "vec3<float32>",
+        5 => "int64[]",
+        6 => "float32[]",
+        7 => "vec3<float64>",
+        8 => "int32[]",
+        9 => "bool[3]",
+        10 => "mat3x3<float64>",
+        11 => "float32",
+        12 => "mat3x3<float32>",
+        13 => "none",
+        14 => "tensor<float32>",
+        15 => "tensor<float64>",
+        16 => "tensor<int32>",
+        17 => "tensor<int64>",
+        _ => "unknown",
     }
 }

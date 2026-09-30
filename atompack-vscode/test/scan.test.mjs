@@ -2,11 +2,12 @@
 // must reject rather than hang or crash the host.
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import { AtpReader, bytesSource, fileSource } from '../dist/reader.js'
 import { Scanner, to_binary } from '../dist/scan.js'
 
-const fixture = new URL(`fixtures/groups.atp`, import.meta.url).pathname
+const fixture = fileURLToPath(new URL(`fixtures/groups.atp`, import.meta.url))
 
 test(`worker chunks match the reader`, async () => {
   const reader = new AtpReader(fileSource(fixture))
@@ -61,6 +62,7 @@ test(`real file chunks line up with records`, { skip: !process.env.ATP_FILE }, a
       const rows = reader.records(start, 200)
       const { count, columns } = await scanner.record_columns(start, 200)
       assert.equal(count, rows.length)
+      if (!count) continue
       assert.deepEqual([...columns.n_atoms], rows.map((r) => r.n_atoms))
       assert.deepEqual([...columns.energy], rows.map((r) => Math.fround(r.energy ?? NaN)))
     }

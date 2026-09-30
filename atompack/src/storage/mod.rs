@@ -38,7 +38,6 @@ mod dtypes;
 mod extensions;
 mod header;
 mod index;
-mod reader;
 mod schema;
 mod soa;
 
@@ -46,9 +45,7 @@ use self::dtypes::arr;
 use self::extensions::Extensions;
 pub use self::extensions::{GroupColumn, Grouping};
 use self::header::{Header, encode_header_slot, read_best_header};
-use self::index::{IndexStorage, MoleculeIndex, decode_index, decode_index_entries, encode_index};
-use self::reader::read_committed;
-pub use self::reader::{AtomReader, ReadAt};
+use self::index::{IndexStorage, MoleculeIndex, decode_index, encode_index};
 use self::schema::{
     SchemaEntry, SchemaLock, decode_schema_lock, encode_schema_lock, merge_schema_lock,
     record_schema, schema_from_molecule, validate_schema_lock_for_record_format,
@@ -92,31 +89,6 @@ const TYPE_TENSOR_F32: u8 = 14; // [ndim:u8][dims:u32...][f32...]
 const TYPE_TENSOR_F64: u8 = 15; // [ndim:u8][dims:u32...][f64...]
 const TYPE_TENSOR_I32: u8 = 16; // [ndim:u8][dims:u32...][i32...]
 const TYPE_TENSOR_I64: u8 = 17; // [ndim:u8][dims:u32...][i64...]
-
-/// Human-readable name of a section type tag (as in [`DatabaseSchemaSection`]).
-pub fn type_tag_name(type_tag: u8) -> &'static str {
-    match type_tag {
-        TYPE_FLOAT => "float64",
-        TYPE_INT => "int64",
-        TYPE_STRING => "string",
-        TYPE_F64_ARRAY => "float64[]",
-        TYPE_VEC3_F32 => "vec3<float32>",
-        TYPE_I64_ARRAY => "int64[]",
-        TYPE_F32_ARRAY => "float32[]",
-        TYPE_VEC3_F64 => "vec3<float64>",
-        TYPE_I32_ARRAY => "int32[]",
-        TYPE_BOOL3 => "bool[3]",
-        TYPE_MAT3X3_F64 => "mat3x3<float64>",
-        TYPE_FLOAT32 => "float32",
-        TYPE_MAT3X3_F32 => "mat3x3<float32>",
-        TYPE_NONE => "none",
-        TYPE_TENSOR_F32 => "tensor<float32>",
-        TYPE_TENSOR_F64 => "tensor<float64>",
-        TYPE_TENSOR_I32 => "tensor<int32>",
-        TYPE_TENSOR_I64 => "tensor<int64>",
-        _ => "unknown",
-    }
-}
 
 // Two redundant page-aligned header slots for crash safety.
 const HEADER_SLOT_SIZE: usize = 4096;
@@ -297,10 +269,46 @@ impl AtomDatabase {
 
     fn open_with_options<P: AsRef<Path>>(path: P, use_mmap: bool, populate: bool) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let file = File::open(&path)?;
-        let committed = read_committed(&file)?;
-        let header = committed.header;
-        let committed_end = committed.end;
+        let mut file = File::open(&path)?;
+
+        // Determine file format version from the first 8 bytes: [magic][u32 version LE].
+        let mut prefix = [0u8; 8];
+        file.read_exact(&mut prefix)?;
+        if &prefix[0..4] != MAGIC {
+            return Err(Error::InvalidData("Invalid file format".into()));
+        }
+        let version = u32::from_le_bytes(arr(&prefix[4..8])?);
+
+        if version != FILE_FORMAT_VERSION {
+            return Err(Error::InvalidData(format!(
+                "Unsupported file format version {} (expected {})",
+                version, FILE_FORMAT_VERSION
+            )));
+        }
+
+        Self::open_v1(path, file, use_mmap, populate)
+    }
+
+    fn open_v1(path: PathBuf, mut file: File, use_mmap: bool, populate: bool) -> Result<Self> {
+        // Read the best valid header slot (crash-safe).
+        let header = read_best_header(&mut file)?;
+        if header.record_format != RECORD_FORMAT_SOA_V2
+            && header.record_format != RECORD_FORMAT_SOA_V3
+        {
+            return Err(Error::InvalidData(format!(
+                "Unsupported record format {}.",
+                header.record_format
+            )));
+        }
+
+        let committed_end = if header.index_offset == 0 || header.index_len == 0 {
+            header.data_start
+        } else {
+            header
+                .index_offset
+                .checked_add(header.index_len)
+                .ok_or_else(|| Error::InvalidData("Index end overflow".into()))?
+        };
 
         let file_size = file.metadata()?.len();
         let truncate_tail_on_next_write = !use_mmap && file_size > committed_end;
@@ -310,8 +318,8 @@ impl AtomDatabase {
         let data_mmap = if use_mmap {
             let mmap_file = File::open(&path)?;
             let mmap = unsafe { Mmap::map(&mmap_file)? };
+            #[cfg(target_os = "linux")]
             if populate {
-                #[cfg(target_os = "linux")]
                 let _ = mmap.advise(memmap2::Advice::PopulateRead);
             }
             Some(Arc::new(mmap))
@@ -327,13 +335,31 @@ impl AtomDatabase {
                     count: header.num_molecules as usize,
                 }
             } else {
-                IndexStorage::InMemory(decode_index(
-                    &file.read_vec(header.index_offset, header.index_len)?,
-                )?)
+                file.seek(SeekFrom::Start(header.index_offset))?;
+                let mut index_bytes = vec![0u8; header.index_len as usize];
+                file.read_exact(&mut index_bytes)?;
+                let vec = decode_index(&index_bytes)?;
+                IndexStorage::InMemory(vec)
             }
         } else {
             IndexStorage::InMemory(Vec::new())
         };
+
+        let schema_lock = if header.schema_offset > 0 && header.schema_len > 0 {
+            file.seek(SeekFrom::Start(header.schema_offset))?;
+            let mut schema_bytes = vec![0u8; header.schema_len as usize];
+            file.read_exact(&mut schema_bytes)?;
+            Some(decode_schema_lock(&schema_bytes)?)
+        } else {
+            None
+        };
+
+        let extensions = Extensions::open(
+            &mut file,
+            (header.extensions_offset, header.extensions_len),
+            header.data_start,
+            committed_end,
+        )?;
 
         Ok(Self {
             path,
@@ -343,10 +369,10 @@ impl AtomDatabase {
             committed_end,
             truncate_tail_on_next_write,
             index,
-            schema_lock: committed.schema_lock,
+            schema_lock,
             file: Some(file),
             data_mmap,
-            extensions: committed.extensions,
+            extensions,
         })
     }
 

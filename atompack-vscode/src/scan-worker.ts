@@ -1,4 +1,4 @@
-// One scan worker: its own WASM reader on the file, answering record_columns chunks.
+// One scan worker: its own native mmap reader, answering record_columns chunks.
 import { parentPort, workerData } from 'node:worker_threads'
 import { AtpReader, fileSource } from './reader'
 import { buffers, to_binary } from './scan'

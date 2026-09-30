@@ -19,7 +19,7 @@ class AtpEditorProvider implements vscode.CustomReadonlyEditorProvider<AtpDocume
   constructor(private context: vscode.ExtensionContext) {}
 
   async openCustomDocument(uri: vscode.Uri): Promise<AtpDocument> {
-    // Local files are read lazily by range; other schemes are loaded whole.
+    // Local files are memory mapped; other schemes use a temporary local copy.
     const file = uri.scheme === `file` ? uri.fsPath : undefined
     const reader = new AtpReader(file ? fileSource(file) : bytesSource(await vscode.workspace.fs.readFile(uri)))
     return new AtpDocument(uri, reader, new Scanner(file, reader))

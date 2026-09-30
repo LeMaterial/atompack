@@ -1,7 +1,8 @@
 **
-!dist/**
-dist/reader.js
-dist/scan.js
+!dist/atompack.node
+!dist/extension.js
+!dist/scan-worker.js
+!dist/webview/**
 !package.json
 !media/icon.png
 !README.md
