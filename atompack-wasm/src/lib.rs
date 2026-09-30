@@ -136,7 +136,7 @@ pub fn record_columns<R: ReadAt>(
             set("n_atoms", json!(mol.len()));
             if let Some(energy) = &mol.energy {
                 set("energy", json!(energy.as_f64()));
-                if mol.len() > 0 {
+                if !mol.is_empty() {
                     set("energy_per_atom", json!(energy.as_f64() / mol.len() as f64));
                 }
             }
