@@ -66,7 +66,8 @@ export class Scanner {
     const worker = new Worker(path.join(__dirname, `scan-worker.js`), { workerData: this.file })
     let failure: Error | undefined
     worker.on(`message`, (msg) => {
-      const job = this.jobs.get(worker)!
+      const job = this.jobs.get(worker)
+      if (!job) return // finished after dispose
       this.jobs.set(worker, undefined)
       this.idle.push(worker)
       if (`error` in msg) job.reject(new Error(msg.error))
@@ -96,8 +97,11 @@ export class Scanner {
 
   dispose() {
     clearTimeout(this.timer)
-    for (const job of this.queue.splice(0)) job.reject(new Error(`file closed`))
+    // Busy workers may still post a result before terminating, so settle their jobs now.
+    const err = new Error(`file closed`)
+    for (const job of [...this.jobs.values(), ...this.queue.splice(0)]) job?.reject(err)
     for (const worker of this.jobs.keys()) worker.terminate()
+    this.jobs.clear()
     this.idle = []
   }
 }

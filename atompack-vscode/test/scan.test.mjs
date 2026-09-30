@@ -39,7 +39,7 @@ test(`dispose rejects pending chunks`, async () => {
   const pending = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => scanner.record_columns(i, 1))
   scanner.dispose()
   const results = await Promise.allSettled(pending)
-  assert.ok(results.every((r) => r.status === `rejected`))
+  assert.ok(results.every((r) => r.status === `rejected` && r.reason.message === `file closed`))
   reader.dispose()
 })
 
