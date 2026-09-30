@@ -1,18 +1,7 @@
-// Native Node-API reader; local files use AtomDatabase's existing mmap implementation.
+// Native Node-API reader over AtomDatabase's existing mmap implementation. The extension only
+// opens it in the reader process (see client.ts).
 import * as fs from 'node:fs'
-import * as os from 'node:os'
 import * as path from 'node:path'
-
-export type Source = { path: string } | { bytes: Uint8Array }
-
-export function fileSource(file_path: string): Source {
-  fs.accessSync(file_path, fs.constants.R_OK)
-  return { path: file_path }
-}
-
-export function bytesSource(bytes: Uint8Array): Source {
-  return { bytes }
-}
 
 interface NativeReader {
   overview(): unknown
@@ -24,29 +13,16 @@ interface NativeReader {
   dispose(): void
 }
 
-/** Owns one native reader and, for virtual filesystem resources, its temporary copy. */
+/** Owns one native reader. */
 export class AtpReader {
   private native?: NativeReader
-  private temporary?: string
 
-  constructor(source: Source) {
-    try {
-      const { NativeReader } = require(path.join(__dirname, 'atompack.node')) as {
-        NativeReader: new (file_path: string) => NativeReader
-      }
-      let file_path: string
-      if ('path' in source) {
-        file_path = source.path
-      } else {
-        this.temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'atompack-'))
-        file_path = path.join(this.temporary, 'database.atp')
-        fs.writeFileSync(file_path, source.bytes, { mode: 0o600 })
-      }
-      this.native = new NativeReader(file_path)
-    } catch (err) {
-      this.dispose()
-      throw err
+  constructor(file_path: string) {
+    fs.accessSync(file_path, fs.constants.R_OK)
+    const { NativeReader } = require(path.join(__dirname, 'atompack.node')) as {
+      NativeReader: new (file_path: string) => NativeReader
     }
+    this.native = new NativeReader(file_path)
   }
 
   private get reader(): NativeReader {
@@ -69,10 +45,6 @@ export class AtpReader {
   dispose() {
     this.native?.dispose()
     this.native = undefined
-    if (this.temporary) {
-      fs.rmSync(this.temporary, { recursive: true, force: true })
-      this.temporary = undefined
-    }
   }
 }
 

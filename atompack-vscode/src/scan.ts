@@ -1,9 +1,8 @@
 // Serves record_columns chunks for the Plots tab from worker threads, so a long scan neither
-// blocks the extension host nor takes over the machine (remote hosts are often shared).
+// blocks the viewer's other requests nor takes over the machine (remote hosts are often shared).
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { Worker } from 'node:worker_threads'
-import type { AtpReader } from './reader'
 
 export type BinaryColumns = {
   count: number
@@ -43,14 +42,9 @@ export class Scanner {
   private jobs = new Map<Worker, Job | undefined>()
   private timer: NodeJS.Timeout | undefined
 
-  /** Without a file path (non-file URIs), chunks are read on the calling thread. */
-  constructor(
-    private file: string | undefined,
-    private reader: AtpReader,
-  ) {}
+  constructor(private file: string) {}
 
   record_columns(start: number, count: number): Promise<BinaryColumns> {
-    if (!this.file) return Promise.resolve(to_binary(this.reader.record_columns(start, count)))
     return new Promise((resolve, reject) => {
       this.queue.push({ start, count, resolve, reject })
       this.pump()

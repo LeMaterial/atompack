@@ -1,17 +1,14 @@
 import * as vscode from 'vscode'
-import { AtpReader, bytesSource, fileSource, READER_METHODS, type ReaderMethod } from './reader'
-import { Scanner } from './scan'
+import { ReaderClient } from './client'
 
 class AtpDocument implements vscode.CustomDocument {
   constructor(
     readonly uri: vscode.Uri,
-    readonly reader: AtpReader,
-    readonly scanner: Scanner,
+    readonly reader: ReaderClient,
   ) {}
 
   dispose() {
-    this.scanner.dispose()
-    this.reader.dispose()
+    void this.reader.dispose()
   }
 }
 
@@ -20,9 +17,17 @@ class AtpEditorProvider implements vscode.CustomReadonlyEditorProvider<AtpDocume
 
   async openCustomDocument(uri: vscode.Uri): Promise<AtpDocument> {
     // Local files are memory mapped; other schemes use a temporary local copy.
-    const file = uri.scheme === `file` ? uri.fsPath : undefined
-    const reader = new AtpReader(file ? fileSource(file) : bytesSource(await vscode.workspace.fs.readFile(uri)))
-    return new AtpDocument(uri, reader, new Scanner(file, reader))
+    const reader = new ReaderClient(
+      uri.scheme === `file` ? { path: uri.fsPath } : { bytes: await vscode.workspace.fs.readFile(uri) },
+    )
+    try {
+      // Report files that cannot be opened here rather than in the webview.
+      await reader.call(`overview`)
+    } catch (err) {
+      await reader.dispose()
+      throw err
+    }
+    return new AtpDocument(uri, reader)
   }
 
   resolveCustomEditor(document: AtpDocument, panel: vscode.WebviewPanel) {
@@ -34,14 +39,7 @@ class AtpEditorProvider implements vscode.CustomReadonlyEditorProvider<AtpDocume
     webview.onDidReceiveMessage(async ({ id, method, params }) => {
       let reply
       try {
-        if (method === `record_columns`) {
-          const [start, count] = params
-          reply = { id, result: await document.scanner.record_columns(start, count) }
-        } else {
-          if (!READER_METHODS.includes(method)) throw new Error(`unknown method ${method}`)
-          const fn = document.reader[method as ReaderMethod] as (...args: number[]) => unknown
-          reply = { id, result: fn.apply(document.reader, params ?? []) }
-        }
+        reply = { id, result: await document.reader.call(method, params) }
       } catch (err) {
         reply = { id, error: err instanceof Error ? err.message : String(err) }
       }

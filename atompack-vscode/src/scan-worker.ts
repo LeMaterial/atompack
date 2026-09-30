@@ -1,9 +1,9 @@
 // One scan worker: its own native mmap reader, answering record_columns chunks.
 import { parentPort, workerData } from 'node:worker_threads'
-import { AtpReader, fileSource } from './reader'
+import { AtpReader } from './reader'
 import { buffers, to_binary } from './scan'
 
-const reader = new AtpReader(fileSource(workerData))
+const reader = new AtpReader(workerData)
 parentPort!.on(`message`, ({ start, count }) => {
   try {
     const result = to_binary(reader.record_columns(start, count))
