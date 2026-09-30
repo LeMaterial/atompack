@@ -50,9 +50,11 @@ html_theme = "shibuya"
 html_static_path = ["_static"]
 html_css_files = ["css/custom.css"]
 html_js_files = ["js/custom.js"]
-html_logo = "_static/img/entalpic-logo-rounded.png"
-html_favicon = "_static/img/entalpic-logo-rounded-96.png"
+html_logo = "_static/img/atompack-logo.svg"
+html_favicon = "_static/img/atompack-favicon.svg"
 html_theme_options = {
+    "light_logo": "_static/img/atompack-logo.svg",
+    "dark_logo": "_static/img/atompack-logo-dark.svg",
     "nav_links": [
         {
             "title": "atompack",

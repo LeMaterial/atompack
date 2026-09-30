@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="#6A3A94">
+  <title>Atompack</title>
+  <desc>Simplified single-atom mark for small browser icons.</desc>
+  <style>
+    @media (prefers-color-scheme: dark) {
+      svg { fill: #8C6BFF; }
+    }
+  </style>
+  <path d="M143.26 51.47A80 80 0 1 0 169 191.24L179.4 204.88A8 8 0 0 0 185.76 208H200V116H164V128A44 44 0 1 1 132.79 85.9Z"/>
+  <circle cx="184" cy="67" r="22"/>
+</svg>

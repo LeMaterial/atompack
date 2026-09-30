@@ -1,6 +1,13 @@
-# Atompack
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/source/_static/img/atompack-logo-dark.svg">
+    <img src="docs/source/_static/img/atompack-logo.svg" alt="Atompack logo" width="96" height="96">
+  </picture>
+</p>
 
-Append-only molecule storage for atomistic ML datasets.
+<h1 align="center">Atompack</h1>
+
+<p align="center">Append-only molecule storage for atomistic ML datasets.</p>
 
 Atompack is a Python package plus Rust core crate for writing, reading, and distributing molecular
 structures with forces, energies, charges, stresses, and custom properties. It is designed for
