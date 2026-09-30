@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Sequence
+from typing import Any, Iterator, Sequence, overload
 
-from . import Molecule
+import numpy as np
+import numpy.typing as npt
+
+from . import Group, Grouping, Molecule
 
 class AtompackReader:
     """
@@ -72,9 +75,57 @@ class AtompackReader:
         order matches the requested index order.
         """
         ...
+    @property
+    def groups(self) -> ShardedGroups:
+        """
+        Groupings across all shards, by name.
+
+        Groups never span shards; group and record indices are global, so
+        ``reader[group.indices["slab"]]`` is ``group["slab"]``.
+        """
+        ...
     def close(self) -> None:
         """Close the underlying databases and invalidate the reader."""
         ...
+
+class ShardedGroups:
+    """Groupings across the shards of an :class:`AtompackReader`, by name."""
+
+    def keys(self) -> list[str]:
+        """Names of the groupings present in at least one shard."""
+        ...
+    def __getitem__(self, name: str) -> ShardedGrouping: ...
+    def __contains__(self, name: object) -> bool: ...
+    def __len__(self) -> int: ...
+    def __iter__(self) -> Iterator[str]: ...
+
+class ShardedGrouping:
+    """
+    One grouping concatenated across shards, in shard order.
+
+    Indexing and iteration behave like :class:`atompack.Grouping`; group
+    indices and ``group.indices`` are global across the reader.
+    """
+
+    name: str
+
+    def __init__(self, name: str, parts: Sequence[Grouping]) -> None: ...
+    @property
+    def roles(self) -> list[str]:
+        """Role names across shards, in first-seen order (empty for ordered groups)."""
+        ...
+    @property
+    def properties(self) -> dict[str, npt.NDArray[Any] | list[str]]:
+        """Group properties as columns concatenated across shards."""
+        ...
+    def __len__(self) -> int: ...
+    @overload
+    def __getitem__(self, index: int) -> Group: ...
+    @overload
+    def __getitem__(
+        self, index: slice | Sequence[int] | npt.NDArray[np.integer[Any]]
+    ) -> list[Group]: ...
+    def __iter__(self) -> Iterator[Group]: ...
 
 def download(
     repo_id: str,

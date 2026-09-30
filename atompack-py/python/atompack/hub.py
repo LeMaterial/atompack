@@ -3,8 +3,11 @@ from __future__ import annotations
 from bisect import bisect_right
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
-from typing import Any, Sequence
+from typing import Any, Iterator, Sequence
 
+import numpy as np
+
+from ._atompack_rs import Group, Grouping
 from ._atompack_rs import PyAtomDatabase as Database
 from ._atompack_rs import PyMolecule as Molecule
 from .ase_bridge import to_ase_batch as _to_ase_batch
@@ -243,6 +246,12 @@ class AtompackReader:
 
         return [atoms for atoms in atoms_list if atoms is not None]
 
+    @property
+    def groups(self) -> ShardedGroups:
+        """Groupings across all shards, by name; record indices are global."""
+        self._ensure_open()
+        return ShardedGroups(self)
+
     def close(self) -> None:
         if self._closed:
             return
@@ -279,6 +288,135 @@ class AtompackReader:
         db_index = bisect_right(self._offsets, normalized) - 1
         local_index = normalized - self._offsets[db_index]
         return db_index, local_index
+
+
+class ShardedGroups:
+    """Groupings across the shards of an :class:`AtompackReader`, by name."""
+
+    def __init__(self, reader: AtompackReader):
+        self._reader = reader
+
+    def keys(self) -> list[str]:
+        """Names of the groupings present in at least one shard."""
+        self._reader._ensure_open()
+        return sorted({name for database in self._reader._databases for name in database.groups})
+
+    def __getitem__(self, name: str) -> ShardedGrouping:
+        reader = self._reader
+        reader._ensure_open()
+        parts = [
+            database.groups[name]._with_record_offset(offset)
+            for database, offset in zip(reader._databases, reader._offsets)
+            if name in database.groups
+        ]
+        if not parts:
+            raise KeyError(f"No grouping named {name!r}")
+        return ShardedGrouping(name, parts)
+
+    def __contains__(self, name: object) -> bool:
+        return name in self.keys()
+
+    def __len__(self) -> int:
+        return len(self.keys())
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.keys())
+
+    def __repr__(self) -> str:
+        return f"ShardedGroups({self.keys()!r})"
+
+
+class ShardedGrouping:
+    """
+    One grouping concatenated across shards, in shard order.
+
+    Groups never span shards: each shard's groups reference records in that
+    shard. Group indices are global, and ``group.indices`` are global record
+    indices, so ``reader[group.indices["slab"]]`` is ``group["slab"]``.
+    """
+
+    def __init__(self, name: str, parts: Sequence[Grouping]):
+        if len({bool(part.roles) for part in parts}) > 1:
+            raise ValueError(f"Grouping {name!r} mixes named-role and ordered groups across shards")
+        self.name = name
+        self._parts = list(parts)
+        self._offsets: list[int] = []
+        total = 0
+        for part in self._parts:
+            self._offsets.append(total)
+            total += len(part)
+        self._length = total
+
+    @property
+    def roles(self) -> list[str]:
+        """Role names across shards, in first-seen order (empty for ordered groups)."""
+        roles: list[str] = []
+        for part in self._parts:
+            roles.extend(role for role in part.roles if role not in roles)
+        return roles
+
+    @property
+    def properties(self) -> dict[str, np.ndarray | list[str]]:
+        """Group properties as columns concatenated across shards."""
+        columns = [part.properties for part in self._parts]
+        if any(column.keys() != columns[0].keys() for column in columns):
+            raise ValueError(f"Grouping {self.name!r} has different property keys across shards")
+        merged: dict[str, np.ndarray | list[str]] = {}
+        for key in columns[0]:
+            values = [column[key] for column in columns]
+            if all(isinstance(value, list) for value in values):
+                merged[key] = [item for value in values for item in value]
+            elif all(isinstance(value, np.ndarray) for value in values) and (
+                len({value.dtype for value in values}) == 1
+            ):
+                merged[key] = np.concatenate(values)
+            else:
+                raise ValueError(
+                    f"Group property {key!r} of {self.name!r} has different types across shards"
+                )
+        return merged
+
+    def __len__(self) -> int:
+        return self._length
+
+    def _locate(self, index: int) -> tuple[int, int]:
+        normalized = index + self._length if index < 0 else index
+        if not 0 <= normalized < self._length:
+            raise IndexError(
+                f"Group index {index} out of bounds for grouping of length {self._length}"
+            )
+        part = bisect_right(self._offsets, normalized) - 1
+        return part, normalized - self._offsets[part]
+
+    def __getitem__(self, index: Any) -> Any:
+        if isinstance(index, (int, np.integer)):
+            part, local = self._locate(int(index))
+            return self._parts[part][local]
+        if isinstance(index, slice):
+            indices: Sequence[int] = range(*index.indices(self._length))
+        else:
+            indices = [int(i) for i in index]
+
+        routed: dict[int, list[tuple[int, int]]] = {}
+        for position, group_index in enumerate(indices):
+            part, local = self._locate(group_index)
+            routed.setdefault(part, []).append((position, local))
+        groups: list[Group | None] = [None] * len(indices)
+        for part, pairs in routed.items():
+            batch = self._parts[part][[local for _, local in pairs]]
+            for (position, _), group in zip(pairs, batch):
+                groups[position] = group
+        return groups
+
+    def __iter__(self) -> Iterator[Group]:
+        for part in self._parts:
+            yield from part
+
+    def __repr__(self) -> str:
+        return (
+            f"ShardedGrouping({self.name!r}, len={self._length}, "
+            f"shards={len(self._parts)}, roles={self.roles!r})"
+        )
 
 
 def download(
@@ -443,6 +581,8 @@ def open_path(source: str | Path) -> AtompackReader:
 
 __all__ = [
     "AtompackReader",
+    "ShardedGroups",
+    "ShardedGrouping",
     "download",
     "upload",
     "open",
