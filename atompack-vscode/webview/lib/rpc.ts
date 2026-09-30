@@ -1,4 +1,4 @@
-// Requests to the extension host, which answers from the WASM reader.
+// Requests to the extension host, which answers from the native reader.
 // Shapes mirror atompack-node/src/view.rs.
 
 export type Scalar = number | string | null

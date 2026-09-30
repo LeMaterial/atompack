@@ -22,6 +22,16 @@ are copied into a private temporary directory, which is removed when the documen
 closes. Treat open databases as immutable: close the viewer before modifying or
 replacing the underlying file.
 
+## Known limitations
+
+- Overwriting or truncating a database while it is open can crash the shared VS Code
+  extension host. Close all viewer tabs for that file before regenerating it.
+  Process isolation or non-mmap reading is tracked in [#51](https://github.com/LeMaterial/atompack/issues/51).
+- Sending a group with the same record in multiple roles to Compare can crash that
+  view. Avoid comparing repeated members until [#52](https://github.com/LeMaterial/atompack/issues/52) is fixed.
+- Synchronized cameras share rotation and position, but orthographic zoom currently
+  needs adjusting in each pane. Tracked in [#53](https://github.com/LeMaterial/atompack/issues/53).
+
 ## Develop
 
 Install Node.js 22.13+ and stable Rust with the native C/C++ build tools for your OS.

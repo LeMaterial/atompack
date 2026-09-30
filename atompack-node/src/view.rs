@@ -5,6 +5,7 @@ use atompack::{AtomDatabase, GroupColumn, Molecule, PropertyValue};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 
+/// Summarize database metadata, schema, and groupings for the viewer.
 pub fn overview(reader: &AtomDatabase) -> atompack::Result<Value> {
     let compression = match reader.compression() {
         atompack::compression::CompressionType::None => json!({"kind": "none"}),

@@ -3,7 +3,19 @@ name: VS Code extension
 on:
   push:
     branches: [main]
+    paths:
+      - 'atompack/**'
+      - 'atompack-node/**'
+      - 'atompack-vscode/**'
+      - 'Cargo.*'
+      - '.github/workflows/vscode.yml'
   pull_request:
+    paths:
+      - 'atompack/**'
+      - 'atompack-node/**'
+      - 'atompack-vscode/**'
+      - 'Cargo.*'
+      - '.github/workflows/vscode.yml'
   workflow_dispatch:
 
 concurrency:

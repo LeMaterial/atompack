@@ -5,7 +5,7 @@
   import { type AxisConfig, BinnedScatterPlot, Histogram } from 'matterviz/plot'
   import { fmt, key_formula } from './chem'
   import { is_toggle_key, step_key } from './keys'
-  import { fit, select_rows } from './query'
+  import { fit, plot_filter, select_rows } from './query'
   import { scan, start_scan, table } from './scan.svelte'
   import {
     compare,
@@ -104,10 +104,10 @@
 
   // The same ranges and order in the Records tab, which pages through all of them.
   function open_records() {
-    const bounds = (key: string, range: Vec2 | null) =>
-      range ? [`${key} >= ${+range[0].toPrecision(6)}`, `${key} <= ${+range[1].toPrecision(6)}`] : []
-    const y = view.kind === `scatter` ? bounds(view.y, y_range) : []
-    records_view.filter = [...bounds(view.x, x_range), ...y].join(`, `)
+    records_view.filter = plot_filter([
+      { key: view.x, range: x_range, log: view.log_x },
+      ...(view.kind === `scatter` ? [{ key: view.y, range: y_range, log: view.log_y }] : []),
+    ])
     records_view.sort = { key: view.x, desc: view.desc }
     records_view.page = 0
     on_records()

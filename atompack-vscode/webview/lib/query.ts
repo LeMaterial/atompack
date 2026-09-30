@@ -6,6 +6,16 @@ import { table } from './scan.svelte'
 export type Sort = { key: string; desc: boolean }
 export type Test = (row: number) => boolean
 
+/** Express the visible plot population exactly, including automatic/log axes. */
+export function plot_filter(axes: { key: string; range: [number, number] | null; log: boolean }[]): string {
+  return axes.flatMap(({ key, range, log }) => [
+    // Strict infinity bounds exclude both non-finite values and missing (NaN) rows.
+    `${key} > ${log ? 0 : -Infinity}`,
+    `${key} < Infinity`,
+    ...(range ? [`${key} >= ${range[0]}`, `${key} <= ${range[1]}`] : []),
+  ]).join(`, `)
+}
+
 const CONDITION = /^\s*([\w.-]+)\s*(<=|>=|!=|==|=|<|>)\s*(\S+)\s*$/
 
 /**

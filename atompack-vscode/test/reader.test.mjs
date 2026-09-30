@@ -80,6 +80,26 @@ test(`rejects files that are not atompack`, () => {
   assert.throws(() => new AtpReader(bytesSource(new Uint8Array(10000))))
 })
 
+test(`corrupt record offsets throw JS errors without aborting the host`, () => {
+  // Run in another Node process so a regression reports a failed test, not a dead test runner.
+  execFileSync(process.execPath, ['--input-type=module', '-e', `
+    import assert from 'node:assert/strict'
+    import { readFileSync } from 'node:fs'
+    import { AtpReader, bytesSource } from ${JSON.stringify(new URL('../dist/reader.js', import.meta.url).href)}
+    const bytes = readFileSync(${JSON.stringify(fixture)})
+    // The fixture ends with [u64 count][six 20-byte index entries]. Corrupt record 2.
+    assert.equal(bytes.readBigUInt64LE(bytes.length - 6 * 20 - 8), 6n)
+    bytes.writeBigUInt64LE(1_000_000_000n, bytes.length - 4 * 20)
+    const reader = new AtpReader(bytesSource(bytes))
+    try {
+      for (const read of [() => reader.molecule(2), () => reader.records(0, 6), () => reader.record_columns(0, 6)]) {
+        assert.throws(read, /out of range|out of bounds/)
+        assert.equal(reader.molecule(0).numbers.length, 1)
+      }
+    } finally { reader.dispose() }
+  `], { stdio: ['ignore', 'pipe', 'pipe'] })
+})
+
 test(`several readers stay independent`, () => {
   const a = new AtpReader(fileSource(fixture))
   const b = new AtpReader(bytesSource(readFileSync(fixture)))
