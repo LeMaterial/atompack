@@ -1,0 +1,10 @@
+**
+!dist/atompack.node
+!dist/extension.js
+!dist/reader-process.js
+!dist/scan-worker.js
+!dist/webview/**
+!package.json
+!media/icon.png
+!README.md
+!LICENSE*

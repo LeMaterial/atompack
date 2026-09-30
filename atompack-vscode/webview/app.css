@@ -1,0 +1,70 @@
+@import 'tailwindcss';
+
+/* VS Code theme colors as Tailwind tokens: bg-editor, text-muted, border-line, ... */
+@theme {
+  --color-editor: var(--vscode-editor-background);
+  --color-panel: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  --color-fg: var(--vscode-foreground);
+  --color-muted: var(--vscode-descriptionForeground);
+  --color-line: var(--vscode-panel-border, var(--vscode-widget-border, #8884));
+  --color-accent: var(--vscode-focusBorder);
+  --color-hover: var(--vscode-list-hoverBackground);
+  --color-selected: var(--vscode-list-activeSelectionBackground);
+  --color-selected-fg: var(--vscode-list-activeSelectionForeground);
+  --color-button: var(--vscode-button-background);
+  --color-button-fg: var(--vscode-button-foreground);
+  --color-input: var(--vscode-input-background);
+  --color-error: var(--vscode-errorForeground);
+  --color-chart: var(--vscode-charts-blue, #3794ff);
+  --font-mono: var(--vscode-editor-font-family), monospace;
+}
+
+/* matterviz/app.css also ships its demo-site shell (body padding, centered main,
+   striped block tables). Undo it in the base layer so utilities still win. */
+@layer base {
+  html,
+  body {
+    height: 100%;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+    display: block;
+    line-height: 1.4;
+    background: var(--vscode-editor-background);
+    color: var(--vscode-foreground);
+    font-family: var(--vscode-font-family);
+    font-size: var(--vscode-font-size);
+  }
+  /* VS Code tags <body> with its theme kind; match native controls to it. */
+  body:is(.vscode-dark, .vscode-high-contrast:not(.vscode-high-contrast-light)) {
+    color-scheme: dark;
+  }
+  input[type='checkbox'] {
+    accent-color: var(--vscode-button-background);
+  }
+  main {
+    margin: 0;
+    max-width: none;
+  }
+  table {
+    display: table;
+    overflow: visible;
+  }
+  table :is(td, th) {
+    border: 0;
+    padding: 0;
+  }
+  tbody tr:nth-child(odd) {
+    background: none;
+  }
+}
+
+#app {
+  height: 100%;
+}
+
+@layer components {
+  .btn {
+    @apply rounded bg-button px-2 py-0.5 text-button-fg hover:opacity-90 disabled:opacity-40;
+  }
+}

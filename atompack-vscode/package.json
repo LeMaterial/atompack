@@ -1,0 +1,65 @@
+{
+  "name": "atompack-vscode",
+  "displayName": "Atompack Viewer",
+  "description": "Browse and visualize atompack (.atp) databases",
+  "icon": "media/icon.png",
+  "version": "0.1.1",
+  "publisher": "Ramlaoui",
+  "license": "Apache-2.0",
+  "private": true,
+  "engines": {
+    "vscode": "^1.93.0"
+  },
+  "categories": [
+    "Visualization"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "atompack.viewer",
+        "displayName": "Atompack Viewer",
+        "selector": [
+          {
+            "filenamePattern": "*.atp"
+          }
+        ],
+        "priority": "default"
+      }
+    ]
+  },
+  "scripts": {
+    "build:ext": "esbuild src/extension.ts src/reader-process.ts src/scan-worker.ts --bundle --platform=node --format=cjs --external:vscode --outdir=dist",
+    "build:webview": "vite build",
+    "build": "npm run build:native && npm run build:ext && npm run build:webview",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "test": "esbuild src/client.ts src/reader.ts src/reader-process.ts src/scan.ts src/scan-worker.ts --bundle --platform=node --format=cjs --outdir=dist --log-level=warning && node --test test/*.test.mjs",
+    "package": "node scripts/package.mjs",
+    "build:native": "node scripts/build-native.mjs"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^22.20.4",
+    "@types/vscode": "~1.93.0",
+    "@vscode/vsce": "^4.0.0",
+    "esbuild": "^0.28.2",
+    "matterviz": "0.7.0",
+    "svelte": "5.57.1",
+    "svelte-check": "^4.7.6",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^6.0.3",
+    "vite": "^8.3.1"
+  },
+  "overrides": {
+    "svelte-widgets": "1.6.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/LeMaterial/atompack.git",
+    "directory": "atompack-vscode"
+  }
+}

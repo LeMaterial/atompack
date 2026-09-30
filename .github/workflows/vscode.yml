@@ -1,0 +1,135 @@
+name: VS Code extension
+
+on:
+  push:
+    branches: [main]
+    tags: ['atompack-vscode-v*']
+    paths:
+      - 'atompack/**'
+      - 'atompack-node/**'
+      - 'atompack-vscode/**'
+      - 'Cargo.*'
+      - '.github/workflows/vscode.yml'
+  pull_request:
+    paths:
+      - 'atompack/**'
+      - 'atompack-node/**'
+      - 'atompack-vscode/**'
+      - 'Cargo.*'
+      - '.github/workflows/vscode.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/atompack-vscode-v') }}
+
+jobs:
+  validate-version:
+    name: Validate extension version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify release tag matches package version
+        run: |
+          node --input-type=module <<'JS'
+          import { readFileSync } from 'node:fs'
+          const { version } = JSON.parse(readFileSync('atompack-vscode/package.json', 'utf8'))
+          if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) {
+            throw new Error(`Marketplace requires a major.minor.patch version, got ${version}`)
+          }
+          if (process.env.GITHUB_REF_TYPE === 'tag' && process.env.GITHUB_REF_NAME !== `atompack-vscode-v${version}`) {
+            throw new Error(`Release tag must be atompack-vscode-v${version}`)
+          }
+          console.log(`Extension version: ${version}`)
+          JS
+
+  package:
+    name: VSIX (${{ matrix.target }})
+    needs: validate-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            target: linux-x64
+          - runner: ubuntu-22.04-arm
+            target: linux-arm64
+          - runner: macos-15-intel
+            target: darwin-x64
+          - runner: macos-14
+            target: darwin-arm64
+          - runner: windows-2022
+            target: win32-x64
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        working-directory: atompack-vscode
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: atompack-vscode/package-lock.json
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          # Packaging keeps normal compiler warnings (main has a non-Linux
+          # unused `populate` parameter). The existing Rust CI enforces Clippy.
+          rustflags: ''
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build
+      - run: npm test
+      - run: npm run package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atompack-vscode-${{ matrix.target }}
+          path: atompack-vscode/*-${{ matrix.target }}-*.vsix
+          if-no-files-found: error
+
+  publish:
+    name: Publish to VS Code Marketplace
+    if: startsWith(github.ref, 'refs/tags/atompack-vscode-v')
+    needs: [validate-version, package]
+    runs-on: ubuntu-latest
+    environment: vscode-marketplace
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: atompack-vscode-marketplace
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: atompack-vscode/package-lock.json
+      - run: npm ci
+        working-directory: atompack-vscode
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: atompack-vscode-*
+          merge-multiple: true
+          path: release
+      - name: Authenticate publishing identity
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+      - name: Publish tested platform packages
+        working-directory: atompack-vscode
+        shell: bash
+        run: |
+          shopt -s failglob
+          npx --no-install vsce publish --azure-credential --skip-duplicate --packagePath ../release/*.vsix
