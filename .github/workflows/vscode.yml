@@ -41,6 +41,9 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
+          # Packaging keeps normal compiler warnings (main has a non-Linux
+          # unused `populate` parameter). The existing Rust CI enforces Clippy.
+          rustflags: ''
       - uses: Swatinem/rust-cache@v2
       - run: npm ci
       - run: npm run check
