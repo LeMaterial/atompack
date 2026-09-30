@@ -59,6 +59,12 @@ Writable vs read-only opens:
 - ``atompack.Database.open(path)`` opens read-only with mmap by default
 - ``atompack.Database.open(path, mmap=False)`` reopens the file for appends
 
+.. tip::
+
+   To look at a file without writing code, open it in VS Code with the
+   :doc:`Atompack viewer <vscode-viewer>`: browse records, filter and plot properties,
+   and view structures in 3D.
+
 Batch Writing, Simple Reading
 -----------------------------
 
@@ -138,6 +144,9 @@ again with the same name appends to that grouping.
 
 Files with groups stay readable by older Atompack versions, which see only the records. Append to
 grouped files with Atompack 0.5 or newer: older versions drop the groups when they flush.
+
+The :doc:`VS Code viewer <vscode-viewer>` shows each group's members side by side, labeled by
+role.
 
 ASE Integration
 ---------------

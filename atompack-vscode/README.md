@@ -12,30 +12,31 @@ four groupings; energies and forces are synthetic demonstration values.
 
 ## Install
 
-Download the VSIX matching your extension host from the **VS Code extension** GitHub
-Actions artifacts, then run **Extensions: Install from VSIX** in VS Code. Packages
-are built for macOS (Intel and Apple Silicon), Linux with glibc 2.35 or newer (x64
-and ARM64), and Windows x64. Windows ARM64, Alpine/musl, and browser-only VS Code
-are not currently packaged.
+Install **Atompack Viewer** from the
+[Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=Ramlaoui.atompack-vscode),
+or run:
 
-For Remote SSH, WSL, or Dev Containers, install into the remote workspace and choose
-the remote machine's OS and architecture. `extensionKind: workspace` runs the native
-reader alongside your files.
+```sh
+code --install-extension Ramlaoui.atompack-vscode
+```
+
+Packages are published for macOS (Intel and Apple Silicon), Linux with glibc 2.35 or
+newer (x64 and ARM64), and Windows x64. Windows ARM64, Alpine/musl, and browser-only
+VS Code are not currently supported.
+
+For Remote SSH, WSL, or Dev Containers, use **Install in SSH: …** (or the equivalent
+remote action) in the Extensions view: `extensionKind: workspace` runs the native reader
+on the remote machine, next to your files, and VS Code fetches the package for its
+platform. Preview builds are also available as VSIX files from the **VS Code extension**
+GitHub Actions runs; install them with **Extensions: Install from VSIX**.
+
+## Reading files
 
 Local files are memory mapped read-only. Resources supplied by a virtual filesystem
 are copied into a private temporary directory, which is removed when the document
-closes. Treat open databases as immutable: close the viewer before modifying or
-replacing the underlying file.
-
-## Known limitations
-
-- Overwriting or truncating a database while it is open can crash the shared VS Code
-  extension host. Close all viewer tabs for that file before regenerating it.
-  Process isolation or non-mmap reading is tracked in [#51](https://github.com/LeMaterial/atompack/issues/51).
-- Sending a group with the same record in multiple roles to Compare can crash that
-  view. Avoid comparing repeated members until [#52](https://github.com/LeMaterial/atompack/issues/52) is fixed.
-- Synchronized cameras share rotation and position, but orthographic zoom currently
-  needs adjusting in each pane. Tracked in [#53](https://github.com/LeMaterial/atompack/issues/53).
+closes. The reader runs in its own process, so overwriting or truncating a database
+while it is open stops only that process: pending requests report the error, and the
+next request restarts the reader. Reopen the file to see its new contents.
 
 ## Develop
 
@@ -53,7 +54,8 @@ npm run package
 Packaging automatically tags the VSIX for the current OS and CPU. CI builds and
 tests each supported target on a matching runner. The Node-API 8 binding lives in
 `atompack-node/` and calls the existing `AtomDatabase` API without modifying the
-core library. Plot scans run in Node worker threads with independent readers.
+core library. Each open database has a reader process (`src/reader-process.ts`), whose
+plot scans run in worker threads with independent readers.
 MatterViz renders structures in the webview and retains its own browser WASM assets.
 
 To include a larger database in the reader and worker smoke tests, set `ATP_FILE`

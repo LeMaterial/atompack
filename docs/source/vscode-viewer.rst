@@ -15,10 +15,15 @@ for further analysis in Python.
 Install and open the demo
 -------------------------
 
-The extension is currently a preview distributed as platform-specific VSIX packages.
-Follow the `installation instructions
+Install **Atompack Viewer** from the `Visual Studio Marketplace
+<https://marketplace.visualstudio.com/items?itemName=Ramlaoui.atompack-vscode>`_, or run::
+
+   code --install-extension Ramlaoui.atompack-vscode
+
+On Remote SSH, WSL, or Dev Containers, install it into the remote workspace so the reader
+runs next to your files. The `extension README
 <https://github.com/LeMaterial/atompack/blob/main/atompack-vscode/README.md#install>`_
-to select a package for your extension host, including remote SSH hosts.
+lists the supported platforms.
 
 Download :download:`catalysis-demo.atp <_static/data/catalysis-demo.atp>`, open it in VS Code,
 and select **Atompack Viewer** with **Reopen Editor With…** if the binary-file notice appears.
@@ -60,7 +65,9 @@ and a ``gas`` reference. Select group 240 for the unstrained, on-top example.
    Role labels preserve the relationship between the three records.
 
 Choose ``metal_series`` and double-click group 0 to open the six-metal comparison
-shown above. Other groupings provide 150 ``site_comparison`` groups and 30 ordered
+shown above. With **sync cameras** on, rotating, panning, or zooming one pane moves the
+others; each pane stays framed on its own structure, so a slab and its gas molecule remain
+comparable. **Reset view** reframes every pane. Other groupings provide 150 ``site_comparison`` groups and 30 ordered
 ``relaxation`` trajectories of seven frames each.
 
 Find records through plots
@@ -76,12 +83,12 @@ visible bounds and sort order into the paginated record table.
 
    A zoomed region links the property plot, record list, and selected structure.
 
-Keep open datasets immutable
-----------------------------
+Modify files safely
+-------------------
 
-Close the viewer before overwriting or truncating its file: the native reader uses
-memory mapping, and changing the backing file can crash the extension host.
-The extension README tracks this and the current comparison and camera limitations.
+The viewer reads files through a memory map in a separate process. If a file is
+overwritten or truncated while open, only that process stops: pending requests report
+the error, and VS Code keeps running. Reopen the file to see its new contents.
 
 Recreate the dataset
 --------------------

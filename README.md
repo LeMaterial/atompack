@@ -22,6 +22,8 @@ files or shard directories.
   <a href="https://entalpic-atompack.readthedocs-hosted.com/en/latest/">Documentation</a>
   ·
   <a href="https://huggingface.co/datasets/LeMaterial/Atompack">Hugging Face datasets</a>
+  ·
+  <a href="https://marketplace.visualstudio.com/items?itemName=Ramlaoui.atompack-vscode">VS Code viewer</a>
 </p>
 
 ## Installation
@@ -101,11 +103,15 @@ db = atompack.hub.open_path(local_path)
 - Builtin support for common atomistic ML fields and custom properties
 - Hugging Face Hub helpers for upload, download, and read-only reopening
 - Optional compression with `none`, `lz4`, and `zstd`
+- A [VS Code viewer](#explore-datasets-in-vs-code) to browse, plot, and compare records
 
 ## Explore datasets in VS Code
 
 Browse `.atp` records, inspect structures in 3D, filter properties, and compare group members
-with synchronized cameras using the [Atompack viewer](atompack-vscode/README.md).
+with synchronized cameras using the [Atompack viewer](atompack-vscode/README.md). Install it from
+the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=Ramlaoui.atompack-vscode)
+or with `code --install-extension Ramlaoui.atompack-vscode`, then open any `.atp` file; it also
+works on Remote SSH, WSL, and Dev Containers hosts without Python or Rust.
 
 ![CO adsorption compared across six metals in the Atompack VS Code viewer](docs/source/_static/img/viewer/compare.png)
 
@@ -128,6 +134,7 @@ For the benchmark narrative and current figures, see the
 - [Getting started](https://entalpic-atompack.readthedocs-hosted.com/en/latest/getting-started.html)
 - [Architecture](https://entalpic-atompack.readthedocs-hosted.com/en/latest/architecture.html)
 - [Hugging Face integration](https://entalpic-atompack.readthedocs-hosted.com/en/latest/huggingface.html)
+- [VS Code viewer](https://entalpic-atompack.readthedocs-hosted.com/en/latest/vscode-viewer.html)
 - [Performance notes](https://entalpic-atompack.readthedocs-hosted.com/en/latest/performance.html)
 - [Contributing](https://entalpic-atompack.readthedocs-hosted.com/en/latest/contributing.html)
 
