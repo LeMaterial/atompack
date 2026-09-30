@@ -3,7 +3,7 @@
   "displayName": "Atompack Viewer",
   "description": "Browse and visualize atompack (.atp) databases",
   "icon": "media/icon.png",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "Ramlaoui",
   "license": "Apache-2.0",
   "private": true,
