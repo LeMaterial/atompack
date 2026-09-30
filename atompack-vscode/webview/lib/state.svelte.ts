@@ -1,4 +1,5 @@
 import type { Vec3 } from 'matterviz/math'
+import { merge_compare } from './compare'
 import type { Sort } from './query'
 
 // Browsers cap live WebGL contexts (~16); keep headroom for the other tabs' viewers.
@@ -34,16 +35,17 @@ export const compare = $state({ records: [] as number[], labels: {} as Record<nu
 
 export function toggle_compare(index: number, label?: string) {
   const at = compare.records.indexOf(index)
-  if (at >= 0) compare.records.splice(at, 1)
-  else if (compare.records.length < MAX_COMPARE) {
+  if (at >= 0) {
+    compare.records.splice(at, 1)
+    delete compare.labels[index]
+  } else if (compare.records.length < MAX_COMPARE) {
     compare.records.push(index)
     if (label) compare.labels[index] = label
   }
 }
 
 export function set_compare(entries: { record: number; label?: string }[]) {
-  compare.records = entries.slice(0, MAX_COMPARE).map((e) => e.record)
-  compare.labels = Object.fromEntries(entries.filter((e) => e.label).map((e) => [e.record, e.label!]))
+  Object.assign(compare, merge_compare(entries, MAX_COMPARE))
 }
 
 /** Copy record numbers as a Python list, e.g. to index the same file from atompack. */

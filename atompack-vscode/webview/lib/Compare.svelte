@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { type CameraPose, compare, copy_records, MAX_COMPARE, toggle_compare } from './state.svelte'
+  import { type CameraPose, compare, copy_records, MAX_COMPARE, set_compare, toggle_compare } from './state.svelte'
   import Viewer from './Viewer.svelte'
 
   let sync = $state(true)
@@ -25,7 +25,7 @@
     >
       copy #
     </button>
-    <button class="btn" onclick={() => (compare.records = [])}>Clear</button>
+    <button class="btn" onclick={() => set_compare([])}>Clear</button>
   </div>
   {#if compare.records.length === 0}
     <p class="p-4 text-muted">Add records from the Records tab or group members from the Groups tab.</p>
