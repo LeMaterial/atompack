@@ -171,8 +171,17 @@ class AtompackReader:
         self._ensure_open()
         return self._total_length
 
-    def __getitem__(self, index: int) -> Molecule:
+    def __getitem__(self, index: int | slice) -> Molecule | list[Molecule]:
+        if isinstance(index, slice):
+            self._ensure_open()
+            start, stop, step = index.indices(self._total_length)
+            return self.get_molecules(list(range(start, stop, step)))
         return self.get_molecule(index)
+
+    def __iter__(self):
+        self._ensure_open()
+        for index in range(self._total_length):
+            yield self.get_molecule(index)
 
     def get_molecule(self, index: int) -> Molecule:
         db_index, local_index = self._locate(index)

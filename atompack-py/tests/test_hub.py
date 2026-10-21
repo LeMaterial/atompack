@@ -415,6 +415,21 @@ def test_open_path_directory_flattens_lexicographically(tmp_path: Path) -> None:
     assert [reader[i].energy for i in range(len(reader))] == pytest.approx([-1.0, -2.0, -3.0])
 
 
+def test_reader_supports_iteration_and_slices(tmp_path: Path) -> None:
+    shard_dir = tmp_path / "shards"
+    shard_dir.mkdir()
+    _make_db(shard_dir / "a.atp", [-1.0, -2.0])
+    _make_db(shard_dir / "b.atp", [-3.0, -4.0])
+
+    reader = atompack.hub.open_path(shard_dir)
+
+    assert [molecule.energy for molecule in reader] == pytest.approx([-1.0, -2.0, -3.0, -4.0])
+    assert [molecule.energy for molecule in reader[1:4:2]] == pytest.approx([-2.0, -4.0])
+    assert [molecule.energy for molecule in reader[::-1]] == pytest.approx(
+        [-4.0, -3.0, -2.0, -1.0]
+    )
+
+
 def test_open_path_context_manager_closes_reader(tmp_path: Path) -> None:
     source = tmp_path / "single.atp"
     _make_db(source, [-1.0])
