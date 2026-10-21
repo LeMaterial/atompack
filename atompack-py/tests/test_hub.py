@@ -455,6 +455,45 @@ def test_reader_to_ase_batch_preserves_requested_order(tmp_path: Path) -> None:
     assert atoms_list[1].get_potential_energy() == pytest.approx(-1.0)
 
 
+def test_reader_get_molecules_flat_preserves_requested_order(tmp_path: Path) -> None:
+    shard_dir = tmp_path / "train"
+    shard_dir.mkdir()
+
+    first = atompack.Database(str(shard_dir / "a.atp"), compression="none")
+    mol_a = atompack.Molecule(
+        np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32),
+        np.array([6, 8], dtype=np.uint8),
+    )
+    mol_a.energy = -1.0
+    mol_a.set_property("split", "train-a")
+    mol_b = atompack.Molecule(
+        np.array([[0.5, 0.0, 0.0]], dtype=np.float32),
+        np.array([1], dtype=np.uint8),
+    )
+    mol_b.energy = -2.0
+    mol_b.set_property("split", "train-b")
+    first.add_molecules([mol_a, mol_b])
+    first.flush()
+
+    second = atompack.Database(str(shard_dir / "b.atp"), compression="none")
+    mol_c = atompack.Molecule(
+        np.array([[1.5, 0.0, 0.0], [2.5, 0.0, 0.0], [3.5, 0.0, 0.0]], dtype=np.float32),
+        np.array([8, 1, 1], dtype=np.uint8),
+    )
+    mol_c.energy = -3.0
+    mol_c.set_property("split", "train-c")
+    second.add_molecule(mol_c)
+    second.flush()
+
+    reader = atompack.hub.open_path(shard_dir)
+    batch = reader.get_molecules_flat([2, 0, 1])
+
+    np.testing.assert_array_equal(batch["n_atoms"], np.array([3, 2, 1], dtype=np.uint32))
+    np.testing.assert_allclose(batch["energy"], np.array([-3.0, -1.0, -2.0], dtype=np.float64))
+    np.testing.assert_array_equal(batch["atomic_numbers"], np.array([8, 1, 1, 6, 8, 1]))
+    assert batch["properties"]["split"] == ["train-c", "train-a", "train-b"]
+
+
 def test_import_atompack_does_not_require_huggingface_hub(tmp_path: Path) -> None:
     python_src = Path(__file__).resolve().parents[1] / "python"
     sitecustomize = tmp_path / "sitecustomize.py"
