@@ -175,6 +175,15 @@ structures efficiently with ``add_ase_batch(...)``:
 ``add_ase_batch(...)`` is the preferred path when you already have an iterator or list of
 ``ase.Atoms`` objects and want to ingest them directly into a database.
 
+Builtin labels exported with ``to_ase(attach_calc=False)`` are read back from
+``atoms.info`` (energy and stress) and ``atoms.arrays`` (forces and charges) when
+the ASE getters do not provide them. Explicit arguments take priority over ASE
+getters, which take priority over these fallback values. The existing
+``info={"stress": ...}`` override takes priority over ASE stress but not over
+the named ``stress=`` argument. Fallback values must have the expected numeric
+shape; malformed values raise an error. ``copy_info`` and ``copy_arrays`` control
+custom properties and do not disable builtin label recovery.
+
 Custom ASE values are copied as molecule properties during ingestion. ``atoms.info``,
 custom ``atoms.arrays``, and non-builtin calculator results support ``None``, strings,
 numeric scalars, and numeric arrays with dtype ``float32``, ``float64``, ``int32``, or

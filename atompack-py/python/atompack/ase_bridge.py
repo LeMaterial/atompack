@@ -129,20 +129,27 @@ def _store_custom_property(properties, atom_properties, atom_keys, key, value, s
         properties[key] = coerced
 
 
-def _merge_properties(properties, atom_properties, builtins, atom_keys, values, source):
+def _merge_properties(properties, atom_properties, atom_keys, values, source):
     for key, value in values.items():
         if key in _BUILTIN_FIELDS:
-            # Builtin keys in atoms.info / info-override go to the builtins
-            # dict (when shape/dtype matches), never into custom properties.
-            # Without this guard, info["energy"] would land in both
-            # builtins["energy"] (from get_potential_energy) and
-            # properties["energy"], producing divergent state on round-trip.
-            if key == "stress":
-                arr = np.asarray(value)
-                if arr.shape == (3, 3) and arr.dtype.kind == "f":
-                    builtins["stress"] = arr.astype(np.float64, copy=False)
+            # Builtin labels are extracted separately; never duplicate them
+            # into custom properties, which could give conflicting values.
             continue
         _store_custom_property(properties, atom_properties, atom_keys, key, value, source)
+
+
+def _builtin_fallback(key, value, n_atoms):
+    """Validate a builtin label stored without an ASE calculator."""
+    arr = np.asarray(value)
+    expected = {"energy": (), "forces": (n_atoms, 3), "charges": (n_atoms,), "stress": (3, 3)}
+    if arr.dtype.kind not in {"i", "u", "f"} or arr.shape != expected[key]:
+        raise ValueError(
+            f"ASE builtin {key!r} must be numeric with shape {expected[key]}, "
+            f"got dtype {arr.dtype} and shape {arr.shape}"
+        )
+    if key == "energy":
+        return float(arr)
+    return arr.astype(np.float32 if key == "forces" else np.float64, copy=False)
 
 
 def _extract_ase_record(
@@ -223,8 +230,20 @@ def _extract_ase_record(
         builtins["cell"] = np.asarray(cell, dtype=np.float64)
     if stress is not None:
         builtins["stress"] = np.asarray(stress, dtype=np.float64)
+    elif info is not None and info.get("stress") is not None:
+        # Keep the existing explicit info override, below the named argument.
+        builtins["stress"] = _builtin_fallback("stress", info["stress"], n_atoms)
     else:
         builtins["stress"] = _get_stress(atoms)
+
+    # These are the locations used by to_ase(attach_calc=False). Builtin
+    # labels are independent of the switches for copying custom properties.
+    stored_info = getattr(atoms, "info", {})
+    stored_arrays = getattr(atoms, "arrays", {})
+    for key in ("energy", "forces", "charges", "stress"):
+        values = stored_info if key in {"energy", "stress"} else stored_arrays
+        if builtins[key] is None and isinstance(values, dict) and values.get(key) is not None:
+            builtins[key] = _builtin_fallback(key, values[key], n_atoms)
 
     properties = {}
     atom_properties = {}
@@ -265,7 +284,6 @@ def _extract_ase_record(
         _merge_properties(
             properties,
             atom_properties,
-            builtins,
             atom_keys,
             atoms.info,
             "atoms.info",
@@ -274,7 +292,6 @@ def _extract_ase_record(
         _merge_properties(
             properties,
             atom_properties,
-            builtins,
             atom_keys,
             info,
             "info override",
@@ -747,6 +764,12 @@ def from_ase(
     and explicit ``info=`` overrides are stored as molecule-scope properties.
     Keys listed in ``atom_keys`` are stored as atom-scope custom properties.
     Array shape is not used to infer atom-property scope during ingestion.
+
+    Builtin labels use explicit arguments first, then ASE getters/calculator
+    results, then energy/stress in ``atoms.info`` or forces/charges in
+    ``atoms.arrays``. These fallbacks apply even when custom copying is off.
+    The existing ``info={"stress": ...}`` override takes precedence over ASE
+    stress, but never over the explicit ``stress=`` argument.
     """
     return _record_to_molecule(
         _extract_ase_record(

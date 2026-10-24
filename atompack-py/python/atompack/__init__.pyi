@@ -749,6 +749,11 @@ def from_ase(
         atoms.arrays, atoms.info, calculator results, or the explicit info override.
         Unlisted keys remain molecule-scope properties.
 
+    Builtin labels missing from ASE getters fall back to energy/stress in
+    atoms.info and forces/charges in atoms.arrays, independently of the custom
+    copy switches. Explicit named arguments win. The existing info['stress']
+    override wins over ASE stress, but not over stress=.
+
     Returns
     -------
     Molecule
