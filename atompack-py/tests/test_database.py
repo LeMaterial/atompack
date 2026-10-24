@@ -26,6 +26,74 @@ def _make_molecule(energy: float) -> atompack.Molecule:
 
 
 @pytest.mark.parametrize("compression", ["none", "lz4", "zstd"])
+@pytest.mark.parametrize("mmap", [False, True])
+def test_add_molecules_preserves_mixed_input_order(tmp_path, compression, mmap):
+    source_path = tmp_path / "source.atp"
+    source = atompack.Database(str(source_path), compression=compression)
+    source.add_molecules([_make_molecule(-2.0), _make_molecule(-4.0)])
+    source.flush()
+    reader = atompack.Database.open(str(source_path), mmap=mmap)
+    first, second = reader.get_molecules([0, 1])
+    edited = reader[0]
+    edited.energy = -6.0  # Editing a loaded record makes it owned.
+    inputs = [_make_molecule(-1.0), first, first, _make_molecule(-3.0), second, edited]
+    expected = [-1.0, -2.0, -2.0, -3.0, -4.0, -6.0]
+
+    target_path = tmp_path / "target.atp"
+    target = atompack.Database(str(target_path), compression=compression)
+    target.add_molecules(inputs)
+    target.flush()
+    reopened = atompack.Database.open(str(target_path))
+    assert [reopened[i].energy for i in range(len(reopened))] == expected
+    assert [reopened[i].get_property("tag") for i in range(len(reopened))] == ["train"] * 6
+
+
+@pytest.mark.parametrize("loaded", [False, True])
+def test_add_molecules_preserves_homogeneous_order_and_empty_input(tmp_path, loaded):
+    source_path = tmp_path / "source.atp"
+    source = atompack.Database(str(source_path))
+    source.add_molecules([_make_molecule(-1.0), _make_molecule(-2.0)])
+    source.flush()
+    reader = atompack.Database.open(str(source_path))
+    inputs = (
+        reader.get_molecules([1, 0, 1])
+        if loaded
+        else [_make_molecule(-2.0), _make_molecule(-1.0), _make_molecule(-2.0)]
+    )
+    target = atompack.Database(str(tmp_path / "target.atp"))
+    target.add_molecules([])
+    assert len(target) == 0
+    target.add_molecules(inputs)
+    assert [target[i].energy for i in range(len(target))] == [-2.0, -1.0, -2.0]
+
+
+def test_mixed_batch_selects_format_before_writing_owned_prefix(tmp_path):
+    positions = np.array([[0.123456789123, 0.0, 0.0]], dtype=np.float32)
+    numbers = np.array([1], dtype=np.uint8)
+    tensor = np.arange(8, dtype=np.float64).reshape(2, 2, 2)
+    source = atompack.Database(str(tmp_path / "v3.atp"))
+    loaded = atompack.Molecule.from_arrays(
+        positions, numbers, forces=np.array([[0.123456789123, 2.0, 3.0]], dtype=np.float64)
+    )
+    loaded.set_property("descriptor", tensor)
+    source.add_molecule(loaded)
+    source.flush()
+    reader = atompack.Database.open(str(tmp_path / "v3.atp"))
+    prefix = atompack.Molecule.from_arrays(positions + 1, numbers)
+    target_path = tmp_path / "mixed_v3.atp"
+    target = atompack.Database(str(target_path))
+    target.add_molecules([prefix, reader[0]])
+    target.flush()
+    result = atompack.Database.open(str(target_path))
+    np.testing.assert_array_equal(result[0].positions, prefix.positions)
+    assert result[0].forces is None
+    assert result[1].forces.dtype == np.float64
+    np.testing.assert_array_equal(result[1].forces, loaded.forces)
+    assert result[1].get_property("descriptor").dtype == np.float64
+    np.testing.assert_array_equal(result[1].get_property("descriptor"), tensor)
+
+
+@pytest.mark.parametrize("compression", ["none", "lz4", "zstd"])
 def test_database_roundtrip(tmp_path: Path, compression: str) -> None:
     path = tmp_path / f"molecules_{compression}.atp"
 

@@ -189,6 +189,25 @@ impl PyAtomDatabase {
             }
         }
 
+        if !raw_records.is_empty() && !owned_molecules.is_empty() {
+            // A mixed batch must be planned as a whole: splitting into runs
+            // could lock the file to v2 before a later record requires v3.
+            // Borrow owned inputs and materialize only views, in caller order.
+            // Homogeneous batches retain their existing passthrough paths.
+            let ordered = molecules
+                .iter()
+                .map(|m| match m.as_owned() {
+                    Some(owned) => Ok(Cow::Borrowed(owned)),
+                    None => m.clone_as_owned().map(Cow::Owned),
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+            let refs = ordered.iter().map(Cow::as_ref).collect::<Vec<_>>();
+            return self
+                .inner
+                .add_molecules(&refs)
+                .map_err(|e| PyValueError::new_err(format!("{}", e)));
+        }
+
         if !raw_records.is_empty() {
             let mut fast_schema = None;
             if let Some((first, rest)) = raw_views.split_first() {
