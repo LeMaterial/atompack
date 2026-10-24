@@ -974,6 +974,126 @@ def test_get_molecules_flat_late_optional_builtin_zero_fills(tmp_path: Path) -> 
     np.testing.assert_allclose(batch["forces"][2:], np.ones((2, 3), dtype=np.float64))
 
 
+@pytest.mark.parametrize("compression", ["none", "lz4", "zstd"])
+@pytest.mark.parametrize("mmap", [False, True])
+@pytest.mark.parametrize("indices", [[0, 1], [1, 0], [1, 0, 1], [0]])
+def test_flat_optional_fields_do_not_depend_on_selection_order(
+    tmp_path, compression, mmap, indices
+):
+    path = tmp_path / "optional.atp"
+    writer = atompack.Database(str(path), compression=compression)
+    positions = np.zeros((2, 3), dtype=np.float32)
+    numbers = np.array([1, 8], dtype=np.uint8)
+    missing = atompack.Molecule.from_arrays(positions, numbers)
+    present = atompack.Molecule.from_arrays(
+        positions + 1, numbers, energy=-2.0, forces=np.ones((2, 3), dtype=np.float32)
+    )
+    present.set_property("weight", 3.0)
+    present.set_property("label", "known")
+    present.set_property("site", np.array([4, 5], dtype=np.int32), scope="atom")
+    writer.add_molecules([missing, present])
+    writer.flush()
+    reader = atompack.Database.open(str(path), mmap=mmap)
+
+    batch = reader.get_molecules_flat(indices)
+    np.testing.assert_allclose(batch["energy"], [-2.0 if i else 0.0 for i in indices])
+    np.testing.assert_allclose(
+        batch["forces"],
+        np.concatenate([np.ones((2, 3)) if i else np.zeros((2, 3)) for i in indices]),
+    )
+    np.testing.assert_allclose(batch["properties"]["weight"], [3.0 if i else 0.0 for i in indices])
+    assert batch["properties"]["label"] == ["known" if i else None for i in indices]
+    np.testing.assert_array_equal(
+        batch["atom_properties"]["site"],
+        np.concatenate([np.array([4, 5]) if i else np.array([0, 0]) for i in indices]),
+    )
+
+
+@pytest.mark.parametrize("indices", [[0, 1], [1, 0], [0]])
+@pytest.mark.parametrize("scope", ["molecule", "atom"])
+def test_flat_missing_tensors_still_raise_in_any_order(tmp_path, indices, scope):
+    path = tmp_path / "optional_tensor.atp"
+    writer = atompack.Database(str(path))
+    positions = np.zeros((2, 3), dtype=np.float32)
+    numbers = np.array([1, 8], dtype=np.uint8)
+    missing = atompack.Molecule.from_arrays(positions, numbers)
+    present = atompack.Molecule.from_arrays(positions, numbers)
+    present.set_property("descriptor", np.ones((2, 2), dtype=np.float32), scope=scope)
+    writer.add_molecules([missing, present])
+    writer.flush()
+    reader = atompack.Database.open(str(path))
+    with pytest.raises(ValueError, match="Tensor property 'descriptor' is missing"):
+        reader.get_molecules_flat(indices)
+
+
+@pytest.mark.parametrize("mmap", [False, True])
+@pytest.mark.parametrize("indices", [[2, 1, 0], [1, 2, 1, 0]])
+def test_flat_partial_layouts_keep_scope_and_variable_atom_offsets(tmp_path, mmap, indices):
+    path = tmp_path / "partial.atp"
+    writer = atompack.Database(str(path))
+    molecules = []
+    for i, count in enumerate([2, 1, 3]):
+        molecule = atompack.Molecule.from_arrays(
+            np.full((count, 3), i, dtype=np.float32), np.ones(count, dtype=np.uint8)
+        )
+        if i:
+            molecule.energy = -float(i)
+        if i == 1:
+            molecule.set_property("shared", float(i))
+        if i == 2:
+            molecule.forces = np.full((count, 3), 2, dtype=np.float32)
+            molecule.set_property("shared", np.full(count, 7, dtype=np.int32), scope="atom")
+        molecules.append(molecule)
+    writer.add_molecules(molecules)
+    writer.flush()
+    reader = atompack.Database.open(str(path), mmap=mmap)
+    batch = reader.get_molecules_flat(indices)
+    counts = [2, 1, 3]
+    np.testing.assert_array_equal(batch["n_atoms"], [counts[i] for i in indices])
+    np.testing.assert_allclose(
+        batch["positions"], np.concatenate([np.full((counts[i], 3), i) for i in indices])
+    )
+    np.testing.assert_allclose(
+        batch["forces"],
+        np.concatenate([np.full((counts[i], 3), 2 if i == 2 else 0) for i in indices]),
+    )
+    np.testing.assert_allclose(
+        batch["properties"]["shared"], [1.0 if i == 1 else 0.0 for i in indices]
+    )
+    np.testing.assert_array_equal(
+        batch["atom_properties"]["shared"],
+        np.concatenate([np.full(counts[i], 7 if i == 2 else 0) for i in indices]),
+    )
+
+
+@pytest.mark.parametrize("mmap", [False, True])
+def test_flat_complete_schema_then_shifted_partial_record(tmp_path, mmap):
+    path = tmp_path / "shifted.atp"
+    writer = atompack.Database(str(path))
+    full = atompack.Molecule.from_arrays(
+        np.ones((2, 3), dtype=np.float32),
+        np.array([1, 8], dtype=np.uint8),
+        energy=-2.0,
+        forces=np.ones((2, 3), dtype=np.float32),
+    )
+    full.set_property("weight", 2.0)
+    partial = atompack.Molecule.from_arrays(
+        np.zeros((1, 3), dtype=np.float32),
+        np.array([1], dtype=np.uint8),
+        energy=-1.0,
+    )
+    partial.set_property("weight", 1.0)
+    writer.add_molecules([full, partial])
+    writer.flush()
+    reader = atompack.Database.open(str(path), mmap=mmap)
+    batch = reader.get_molecules_flat([0, 1, 0])
+    np.testing.assert_allclose(batch["energy"], [-2.0, -1.0, -2.0])
+    np.testing.assert_allclose(batch["properties"]["weight"], [2.0, 1.0, 2.0])
+    np.testing.assert_allclose(
+        batch["forces"], np.concatenate([np.ones((2, 3)), np.zeros((1, 3)), np.ones((2, 3))])
+    )
+
+
 def test_database_open_mmap_populate(tmp_path: Path) -> None:
     # Smoke test for the documented populate=True path. On Linux this
     # prefaults mapped pages via memmap2's PopulateRead advise; on macOS the

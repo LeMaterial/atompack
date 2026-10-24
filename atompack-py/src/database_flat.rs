@@ -356,18 +356,9 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
             } else {
                 Vec::new()
             };
-            let mut schema_lookup: std::collections::HashMap<
-                u8,
-                std::collections::HashMap<String, usize>,
-            > = std::collections::HashMap::new();
-            if !use_ordered_schema {
-                for (index, entry) in schema.iter().enumerate() {
-                    schema_lookup
-                        .entry(entry.kind)
-                        .or_default()
-                        .insert(entry.key.clone(), index);
-                }
-            }
+            // Most batches follow the first record's layout. Build a lookup only
+            // when an optional section shifts or disappears in another record.
+            let schema_lookup = std::sync::OnceLock::new();
             let positions_stride = ctx.layout.positions_stride;
             let mut positions = match positions_type {
                 TYPE_VEC3_F32 => FlatPositions::F32(vec![0f32; total_atoms * 3]),
@@ -484,111 +475,27 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
                     );
                 }
 
-                if use_ordered_schema {
-                    if md.sections.len() != schema.len() {
-                        return Err(invalid_data(format!(
-                            "SOA schema mismatch for molecule {}: expected {} sections, got {}",
-                            i,
-                            schema.len(),
-                            md.sections.len()
-                        )));
-                    }
-                    for (section_idx, sec) in md.sections.iter().enumerate() {
-                        let schema_entry = &schema[section_idx];
-                        let expected_key = &schema_keys[section_idx];
-
-                        if sec.kind != expected_key.0 || sec.key.as_bytes() != expected_key.1 {
-                            return Err(invalid_data(format!(
-                                "SOA schema order mismatch at molecule {} for section '{}'",
-                                i, sec.key
-                            )));
-                        }
-
-                        if sec.type_tag != schema_entry.type_tag {
-                            return Err(invalid_data(format!(
-                                "SOA schema mismatch at molecule {} for section '{}'",
-                                i, sec.key
-                            )));
-                        }
-
-                        if is_tensor_type_tag(schema_entry.type_tag) {
-                            let _ = crate::soa::tensor_shape_from_payload(
-                                schema_entry.type_tag,
-                                sec.payload,
-                            )?;
-                        } else if schema_entry.per_atom {
-                            let expected =
-                                n.checked_mul(schema_entry.elem_bytes).ok_or_else(|| {
-                                    invalid_data(format!(
-                                        "Section '{}' payload length overflow",
-                                        sec.key
-                                    ))
-                                })?;
-                            if sec.payload.len() != expected {
-                                return Err(invalid_data(format!(
-                                    "Section '{}' has invalid payload length {} (expected {})",
-                                    sec.key,
-                                    sec.payload.len(),
-                                    expected
-                                )));
+                for (section_position, sec) in md.sections.iter().enumerate() {
+                    let section_idx = if use_ordered_schema
+                        && schema_keys.get(section_position).is_some_and(|expected| {
+                            sec.kind == expected.0 && sec.key.as_bytes() == expected.1
+                        }) {
+                        section_position
+                    } else {
+                        let lookup = schema_lookup.get_or_init(|| {
+                            let mut lookup: std::collections::HashMap<
+                                u8,
+                                std::collections::HashMap<String, usize>,
+                            > = std::collections::HashMap::new();
+                            for (index, entry) in schema.iter().enumerate() {
+                                lookup
+                                    .entry(entry.kind)
+                                    .or_default()
+                                    .insert(entry.key.clone(), index);
                             }
-                        } else if schema_entry.slot_bytes != 0
-                            && sec.payload.len() != schema_entry.slot_bytes
-                        {
-                            return Err(invalid_data(format!(
-                                "Section '{}' has invalid payload length {} (expected {})",
-                                sec.key,
-                                sec.payload.len(),
-                                schema_entry.slot_bytes
-                            )));
-                        }
-
-                        if is_tensor_type_tag(schema_entry.type_tag) {
-                            if let Some(ref mtx) = tensor_mutexes[section_idx] {
-                                let mut guard = mtx
-                                    .lock()
-                                    .map_err(|_| invalid_data("tensor section mutex poisoned"))?;
-                                guard[i] = Some(sec.payload.to_vec());
-                            }
-                        } else if schema_entry.slot_bytes == 0 {
-                            if schema_entry.type_tag == TYPE_NONE {
-                                continue;
-                            }
-                            if let Some(ref mtx) = string_mutexes[section_idx] {
-                                let val = Some(
-                                    std::str::from_utf8(sec.payload)
-                                        .map_err(|_| {
-                                            invalid_data(format!(
-                                                "Invalid UTF-8 in section '{}'",
-                                                sec.key
-                                            ))
-                                        })?
-                                        .to_string(),
-                                );
-                                let mut guard = mtx
-                                    .lock()
-                                    .map_err(|_| invalid_data("string section mutex poisoned"))?;
-                                guard[i] = val;
-                            }
-                        } else {
-                            let buf = &sec_bufs[section_idx];
-                            let offset = if schema_entry.per_atom {
-                                atom_off * schema_entry.elem_bytes
-                            } else {
-                                i * schema_entry.slot_bytes
-                            };
-                            unsafe {
-                                std::ptr::copy_nonoverlapping(
-                                    sec.payload.as_ptr(),
-                                    buf.at(offset),
-                                    sec.payload.len(),
-                                );
-                            }
-                        }
-                    }
-                } else {
-                    for sec in &md.sections {
-                        let section_idx = schema_lookup
+                            lookup
+                        });
+                        lookup
                             .get(&sec.kind)
                             .and_then(|entries| entries.get(sec.key))
                             .copied()
@@ -597,89 +504,85 @@ pub(super) fn get_molecules_flat_soa_impl<'py>(
                                     "Unexpected SOA section '{}' in molecule {}",
                                     sec.key, i
                                 ))
-                            })?;
-                        let schema_entry = &schema[section_idx];
+                            })?
+                    };
+                    let schema_entry = &schema[section_idx];
 
-                        if sec.type_tag != schema_entry.type_tag {
-                            return Err(invalid_data(format!(
-                                "SOA schema mismatch at molecule {} for section '{}'",
-                                i, sec.key
-                            )));
-                        }
+                    if sec.type_tag != schema_entry.type_tag {
+                        return Err(invalid_data(format!(
+                            "SOA schema mismatch at molecule {} for section '{}'",
+                            i, sec.key
+                        )));
+                    }
 
-                        if is_tensor_type_tag(schema_entry.type_tag) {
-                            let _ = crate::soa::tensor_shape_from_payload(
-                                schema_entry.type_tag,
-                                sec.payload,
-                            )?;
-                        } else if schema_entry.per_atom {
-                            let expected =
-                                n.checked_mul(schema_entry.elem_bytes).ok_or_else(|| {
-                                    invalid_data(format!(
-                                        "Section '{}' payload length overflow",
-                                        sec.key
-                                    ))
-                                })?;
-                            if sec.payload.len() != expected {
-                                return Err(invalid_data(format!(
-                                    "Section '{}' has invalid payload length {} (expected {})",
-                                    sec.key,
-                                    sec.payload.len(),
-                                    expected
-                                )));
-                            }
-                        } else if schema_entry.slot_bytes != 0
-                            && sec.payload.len() != schema_entry.slot_bytes
-                        {
+                    if is_tensor_type_tag(schema_entry.type_tag) {
+                        let _ = crate::soa::tensor_shape_from_payload(
+                            schema_entry.type_tag,
+                            sec.payload,
+                        )?;
+                    } else if schema_entry.per_atom {
+                        let expected = n.checked_mul(schema_entry.elem_bytes).ok_or_else(|| {
+                            invalid_data(format!("Section '{}' payload length overflow", sec.key))
+                        })?;
+                        if sec.payload.len() != expected {
                             return Err(invalid_data(format!(
                                 "Section '{}' has invalid payload length {} (expected {})",
                                 sec.key,
                                 sec.payload.len(),
-                                schema_entry.slot_bytes
+                                expected
                             )));
                         }
+                    } else if schema_entry.slot_bytes != 0
+                        && sec.payload.len() != schema_entry.slot_bytes
+                    {
+                        return Err(invalid_data(format!(
+                            "Section '{}' has invalid payload length {} (expected {})",
+                            sec.key,
+                            sec.payload.len(),
+                            schema_entry.slot_bytes
+                        )));
+                    }
 
-                        if is_tensor_type_tag(schema_entry.type_tag) {
-                            if let Some(ref mtx) = tensor_mutexes[section_idx] {
-                                let mut guard = mtx
-                                    .lock()
-                                    .map_err(|_| invalid_data("tensor section mutex poisoned"))?;
-                                guard[i] = Some(sec.payload.to_vec());
-                            }
-                        } else if schema_entry.slot_bytes == 0 {
-                            if schema_entry.type_tag == TYPE_NONE {
-                                continue;
-                            }
-                            if let Some(ref mtx) = string_mutexes[section_idx] {
-                                let val = Some(
-                                    std::str::from_utf8(sec.payload)
-                                        .map_err(|_| {
-                                            invalid_data(format!(
-                                                "Invalid UTF-8 in section '{}'",
-                                                sec.key
-                                            ))
-                                        })?
-                                        .to_string(),
-                                );
-                                let mut guard = mtx
-                                    .lock()
-                                    .map_err(|_| invalid_data("string section mutex poisoned"))?;
-                                guard[i] = val;
-                            }
+                    if is_tensor_type_tag(schema_entry.type_tag) {
+                        if let Some(ref mtx) = tensor_mutexes[section_idx] {
+                            let mut guard = mtx
+                                .lock()
+                                .map_err(|_| invalid_data("tensor section mutex poisoned"))?;
+                            guard[i] = Some(sec.payload.to_vec());
+                        }
+                    } else if schema_entry.slot_bytes == 0 {
+                        if schema_entry.type_tag == TYPE_NONE {
+                            continue;
+                        }
+                        if let Some(ref mtx) = string_mutexes[section_idx] {
+                            let val = Some(
+                                std::str::from_utf8(sec.payload)
+                                    .map_err(|_| {
+                                        invalid_data(format!(
+                                            "Invalid UTF-8 in section '{}'",
+                                            sec.key
+                                        ))
+                                    })?
+                                    .to_string(),
+                            );
+                            let mut guard = mtx
+                                .lock()
+                                .map_err(|_| invalid_data("string section mutex poisoned"))?;
+                            guard[i] = val;
+                        }
+                    } else {
+                        let buf = &sec_bufs[section_idx];
+                        let offset = if schema_entry.per_atom {
+                            atom_off * schema_entry.elem_bytes
                         } else {
-                            let buf = &sec_bufs[section_idx];
-                            let offset = if schema_entry.per_atom {
-                                atom_off * schema_entry.elem_bytes
-                            } else {
-                                i * schema_entry.slot_bytes
-                            };
-                            unsafe {
-                                std::ptr::copy_nonoverlapping(
-                                    sec.payload.as_ptr(),
-                                    buf.at(offset),
-                                    sec.payload.len(),
-                                );
-                            }
+                            i * schema_entry.slot_bytes
+                        };
+                        unsafe {
+                            std::ptr::copy_nonoverlapping(
+                                sec.payload.as_ptr(),
+                                buf.at(offset),
+                                sec.payload.len(),
+                            );
                         }
                     }
                 }
